@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
-use std::{cell::RefCell, sync::Mutex};
+use std::{borrow::Borrow, cell::RefCell, sync::Mutex};
 
 use smithay::{
     backend::renderer::{
@@ -41,6 +41,51 @@ pub struct ImageCopySessions {
     cursor_sessions: Vec<CursorSession>,
 }
 
+/// Counts for a single session-holder, used by the SIGUSR1 VRAM census.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct SessionCensus {
+    pub sessions: usize,
+    pub cursor_sessions: usize,
+    pub offscreen_renderbuffers: usize,
+}
+
+fn count_offscreen<I, S>(sessions: I) -> usize
+where
+    S: Borrow<smithay::utils::user_data::UserDataMap>,
+    I: IntoIterator<Item = S>,
+{
+    sessions
+        .into_iter()
+        .filter(|s| {
+            s.borrow()
+                .get::<SessionData>()
+                .is_some_and(|sd| sd.lock().unwrap().offscreen.is_some())
+        })
+        .count()
+}
+
+pub fn session_census(s: &ImageCopySessions) -> SessionCensus {
+    SessionCensus {
+        sessions: s.sessions.len(),
+        cursor_sessions: s.cursor_sessions.len(),
+        offscreen_renderbuffers: count_offscreen(s.sessions.iter().map(|s| s.user_data()))
+            + count_offscreen(s.cursor_sessions.iter().map(|s| s.user_data())),
+    }
+}
+
+pub fn session_census_user_data(user_data: &UserDataMap) -> SessionCensus {
+    user_data
+        .get::<ImageCopySessionsData>()
+        .map(|d| session_census(&d.borrow()))
+        .unwrap_or_default()
+}
+
+pub fn pending_frame_count(user_data: &UserDataMap) -> usize {
+    user_data
+        .get::<PendingImageCopyBuffers>()
+        .map(|p| p.lock().unwrap().len())
+        .unwrap_or(0)
+}
 pub trait SessionHolder {
     fn add_session(&mut self, session: Session);
     fn remove_session(&mut self, session: &SessionRef);

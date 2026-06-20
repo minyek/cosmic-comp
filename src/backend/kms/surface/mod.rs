@@ -495,6 +495,10 @@ fn surface_thread(
     let name = output.name();
     profiling::register_thread!(&format!("Surface Thread {}", name));
 
+    // Census marker: decrements only when this thread function returns, so a
+    // stranded thread that never reaches its `End` handler keeps being counted.
+    let _thread_handle = crate::utils::renderer_cache_probe::SurfaceThreadHandle::new();
+
     let mut event_loop = EventLoop::try_new().unwrap();
 
     let api = GpuManager::new(GbmGlowBackend::<DrmDeviceFd>::default())
@@ -723,6 +727,7 @@ impl SurfaceThreadState {
         let mut renderer =
             unsafe { GlowRenderer::new(egl) }.context("Failed to create renderer")?;
         init_shaders(renderer.borrow_mut()).context("Failed to initialize shaders")?;
+        crate::utils::gl_debug::try_install(&mut renderer);
 
         self.api.as_mut().add_node(node, gbm, renderer);
 
@@ -1402,6 +1407,22 @@ impl SurfaceThreadState {
         }
 
         self.api.cleanup_texture_cache()?;
+        for device in self.api.devices_mut()? {
+            let node = *device.node();
+            let renderer = device.renderer_mut();
+            crate::utils::renderer_cache_probe::record(
+                format!("surface[{}] {node:?}", self.output.name()),
+                renderer.debug_dmabuf_cache_len(),
+            );
+        }
+
+        if let Some(compositor) = self.compositor.as_ref() {
+            let slot_ids = compositor.with_compositor(|c| c.debug_slot_ids_string());
+            crate::utils::renderer_cache_probe::record_detail(
+                format!("compositor[{}]", self.output.name()),
+                slot_ids,
+            );
+        }
 
         Ok(())
     }

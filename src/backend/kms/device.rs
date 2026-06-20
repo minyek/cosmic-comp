@@ -322,6 +322,7 @@ impl State {
                         .find_map(|(crtc, surface)| (surface.connector == conn).then_some(crtc))
                         .cloned()
                     {
+
                         device.inner.surfaces.remove(&crtc).unwrap().drop_and_join();
                     }
 
@@ -1133,6 +1134,7 @@ impl InnerDevice {
                     .context("Failed to create GL renderer")?
                 };
                 init_shaders(renderer.borrow_mut()).context("Failed to compile shaders")?;
+                crate::utils::gl_debug::try_install(&mut renderer);
                 api.add_node(
                     self.render_node,
                     GbmAllocator::new(

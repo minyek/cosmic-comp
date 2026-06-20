@@ -164,6 +164,9 @@ pub fn run(hooks: crate::hooks::Hooks) -> Result<(), Box<dyn Error>> {
     hooks::HOOKS.set(hooks)
         .expect("Hooks global has already been initialized. Running multiple instances of COSMIC in one process is not supported.");
 
+    // install SIGUSR1 handler for on-demand resource census (see utils::vram_dump)
+    utils::vram_dump::install_sigusr1_handler();
+
     // init event loop
     let mut event_loop = EventLoop::try_new().with_context(|| "Failed to initialize event loop")?;
     // init wayland
@@ -217,6 +220,9 @@ pub fn run(hooks: crate::hooks::Hooks) -> Result<(), Box<dyn Error>> {
                 }
             }
         }
+
+        // honour any pending SIGUSR1 dump requests
+        utils::vram_dump::drain_dump_requests(state);
 
         // send out events
         let _ = state.common.display_handle.flush_clients();

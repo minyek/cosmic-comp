@@ -758,6 +758,52 @@ impl KmsState {
         {
             debug!(?err, "Failed to drain main-thread renderer cleanup queue");
         }
+
+        // The per-surface-thread census reports only the *active* compositors, so a stale
+        // `DrmCompositor` left in the `DrmOutputManager` map — which `allow_frame_flags`
+        // still re-renders every reconfigure, pinning a full-screen render target — is
+        // otherwise invisible. Dump the whole map per device so a leaked `main`
+        // dmabuf-cache id can be cross-referenced to the compositor that retains it.
+        for (node, device) in self.drm_devices.iter_mut() {
+            let mut locked = device.drm.lock();
+            let compositors = locked.compositors();
+            let count = compositors.len();
+            let entries = compositors
+                .iter()
+                .map(|(crtc, compositor)| match compositor.try_lock() {
+                    Ok(compositor) => format!("{crtc:?}: {}", compositor.debug_slot_ids_string()),
+                    Err(_) => format!("{crtc:?}: <locked>"),
+                })
+                .collect::<Vec<_>>()
+                .join("; ");
+            crate::utils::renderer_cache_probe::record_detail(
+                format!("compositor_map {node:?}"),
+                format!("count={count} {{{entries}}}"),
+            );
+        }
+
+        // Escaped-clone backtraces. With COSMIC_DMABUF_TRACE set, every live
+        // full-output `Dmabuf` clone is registered with the backtrace of where it
+        // was made; a buffer with strong_count==1 (a `main ptrs` orphan) has
+        // exactly one survivor, whose site is the leak. The registry is global, so
+        // rebuild the grouped view wholesale each census.
+        let clone_sites = smithay::backend::allocator::dmabuf::debug_dmabuf_clone_sites();
+        crate::utils::renderer_cache_probe::set_clone_sites(
+            crate::utils::renderer_cache_probe::group_clone_sites(&clone_sites),
+        );
+
+        // Live swapchain-slot registry: every slot that has had a buffer allocated
+        // and not yet been dropped. A slot whose swapchain was replaced but that
+        // stays live is the stranded render target; its acquire-path signature
+        // (`live_slot_sites`) names the render that leaked it.
+        crate::utils::renderer_cache_probe::record_detail(
+            "live_slots".to_string(),
+            smithay::backend::allocator::debug_live_slots(),
+        );
+        crate::utils::renderer_cache_probe::record_detail(
+            "live_slot_sites".to_string(),
+            smithay::backend::allocator::debug_live_slot_sites(),
+        );
     }
 
     pub fn schedule_render(&mut self, output: &Output) {

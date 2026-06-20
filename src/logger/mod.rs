@@ -14,18 +14,16 @@ pub fn init_logger() -> Result<()> {
     } else {
         "warn"
     };
-    let filter = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| {
-            EnvFilter::new(if cfg!(debug_assertions) {
-                "info"
-            } else {
-                "warn"
-            })
-        })
-        .add_directive(Directive::from_str("cosmic_text=error").unwrap())
-        .add_directive(Directive::from_str("calloop=error").unwrap())
-        .add_directive(Directive::from_str(&format!("smithay={level}")).unwrap())
-        .add_directive(Directive::from_str(&format!("cosmic_comp={level}")).unwrap());
+    // Honour RUST_LOG exactly when the user set it; otherwise pin per-module
+    // defaults so non-debug-hunters aren't drowned in info-level chatter.
+    let filter = match EnvFilter::try_from_default_env() {
+        Ok(f) => f,
+        Err(_) => EnvFilter::new(if cfg!(debug_assertions) { "info" } else { "warn" })
+            .add_directive(Directive::from_str("cosmic_text=error").unwrap())
+            .add_directive(Directive::from_str("calloop=error").unwrap())
+            .add_directive(Directive::from_str(&format!("smithay={level}")).unwrap())
+            .add_directive(Directive::from_str(&format!("cosmic_comp={level}")).unwrap()),
+    };
 
     let fmt_layer = fmt::layer().compact();
 

@@ -4,7 +4,11 @@ use std::{
     collections::{HashMap, HashSet},
     fmt,
     hash::{Hash, Hasher},
-    sync::{Arc, LazyLock, Mutex, mpsc::Receiver},
+    sync::{
+        Arc, LazyLock, Mutex,
+        atomic::{AtomicUsize, Ordering},
+        mpsc::Receiver,
+    },
 };
 
 use cosmic::{
@@ -82,6 +86,18 @@ use crate::{
 };
 
 static ID: LazyLock<Id> = LazyLock::new(|| Id::new("Program"));
+
+/// Live count of `IcedElementInternal` instances — one per in-compositor UI
+/// element (window header, menu, applet, zoom UI), maintained by construction
+/// and `Drop`. A value that climbs without bound while window/toplevel counts
+/// stay flat is the signature of orphaned IcedElements retaining their cached
+/// GPU `MemoryRenderBuffer`s.
+static LIVE_ICED_ELEMENTS: AtomicUsize = AtomicUsize::new(0);
+
+/// Number of live `IcedElement`s across the whole compositor.
+pub fn live_count() -> usize {
+    LIVE_ICED_ELEMENTS.load(Ordering::Relaxed)
+}
 
 pub struct IcedElement<P: Program + Send + 'static>(pub(crate) Arc<Mutex<IcedElementInternal<P>>>);
 
@@ -238,6 +254,7 @@ impl<P: Program + Send + Clone + 'static> Clone for IcedElementInternal<P> {
             &mut renderer,
         );
 
+        LIVE_ICED_ELEMENTS.fetch_add(1, Ordering::Relaxed);
         IcedElementInternal {
             additional_scale: self.additional_scale,
             outputs: self.outputs.clone(),
@@ -292,6 +309,7 @@ impl<P: Program + Send + 'static> fmt::Debug for IcedElementInternal<P> {
 
 impl<P: Program + Send + 'static> Drop for IcedElementInternal<P> {
     fn drop(&mut self) {
+        LIVE_ICED_ELEMENTS.fetch_sub(1, Ordering::Relaxed);
         self.handle.remove(self.executor_token.take().unwrap());
     }
 }
@@ -326,6 +344,7 @@ impl<P: Program + Send + 'static> IcedElement<P> {
             })
             .ok();
 
+        LIVE_ICED_ELEMENTS.fetch_add(1, Ordering::Relaxed);
         let mut internal = IcedElementInternal {
             additional_scale: 1.0,
             outputs: HashSet::new(),

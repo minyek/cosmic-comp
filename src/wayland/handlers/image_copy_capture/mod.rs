@@ -43,7 +43,10 @@ mod render;
 mod user_data;
 pub use self::render::*;
 use self::user_data::*;
-pub use self::user_data::{FrameHolder, ImageCopySessions, SessionData, SessionHolder};
+pub use self::user_data::{
+    FrameHolder, ImageCopySessions, SessionCensus, SessionData, SessionHolder, pending_frame_count,
+    session_census, session_census_user_data,
+};
 
 fn default_cursor_size() -> Size<i32, BufferCoords> {
     Size::new(64, 64)
