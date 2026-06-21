@@ -725,6 +725,12 @@ impl KmsState {
                     **egl.display.get_display_handle(),
                     *image,
                 );
+                // Validation-only import: the image is created (and counted by
+                // smithay's create site) purely to check the buffer is importable,
+                // then destroyed here with a raw `DestroyImageKHR`. Tell the leak
+                // counters about this destroy so the EGLImage create/destroy
+                // accounting stays balanced instead of drifting up per client buffer.
+                smithay::backend::renderer::gles::note_egl_image_destroyed(*image as usize);
             })
             .context("Failed to create EGLImage from dmabuf")?;
 
