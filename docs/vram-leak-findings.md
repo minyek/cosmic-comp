@@ -8,9 +8,48 @@ arrives; keep entries dated so the timeline stays legible.
 
 ## Current status
 
-**2026-06-21: SECOND LEAK (call it "Leak C") — orphaned `EGLImage` on the
-`import_dmabuf` error path. Root cause from counting; fix built, awaiting runtime
-verification.** After the Leak-A/B fixes, a desktop session (all apps closed except
+**2026-06-21 (later): "Leak C" RETRACTED — it was an instrumentation artifact, not
+a leak. The `egl_images` counter was lying.** The fixed-build census (snapshot
+`…-155645`, PID 989054) settled it:
+
+- `egl_images_freed_on_import_error: 0` — the `import_egl_image` error path I
+  blamed **never fired**. The "Leak C" fix caught nothing.
+- Yet `egl_images` still read 535 "live" (created 897 − destroyed 362). The
+  EGLImage allocation-site tracer (built as insurance) named the dominant survivor
+  group **n=201** at `cosmic_comp::state::BackendData::dmabuf_imported` →
+  `create_image_from_dmabuf`.
+- That handler (`kms/mod.rs:578`) **validates** every client dmabuf by creating an
+  EGLImage and immediately destroying it with a **raw `DestroyImageKHR`**
+  (`kms/mod.rs:581`) that bypasses `egl_image_destroyed`. So each validated client
+  buffer did `egl_images_created += 1` with **no** matching destroy — the counter
+  (and the handle-keyed registry) drifted up one per client buffer and *looked*
+  like a leak. The image is genuinely freed; only the accounting was wrong.
+
+After excluding that artifact, the only genuinely-live EGLImages are the
+render-path survivors (`n=2,2,3,4,8` ≈ 19): swapchain/scanout render targets
+(`MultiRenderer::bind`/`render_frame`) and current client surface textures
+(`from_surface`) — i.e. images that *should* be live with two outputs and warp
+open. **No EGLImage leak is demonstrated.**
+
+**Fix applied (instrumentation correctness, not a leak fix):** smithay now exposes
+`note_egl_image_destroyed(handle)`, and `dmabuf_imported` calls it after the raw
+`DestroyImageKHR`, so the validation create/destroy balance. The
+`import_egl_image`-error queue-the-orphan change is kept as a correct defensive
+fix (a real but unexercised resource leak on that error path) — *not* the cause of
+any observed VRAM.
+
+**Open / next:** with the counter now honest, take a *long*-session census and check
+whether `egl_images` (and cosmic-comp `nvidia-smi`) actually grow unboundedly or
+plateau. cosmic-comp was **122 MiB** in this short session (vs 483 MiB earlier in a
+long one); with dmabuf Leak A already fixed (635→196 MiB), the residual may be a
+normal high-water mark rather than a leak. Re-establish whether there is a leak at
+all before chasing another cause.
+
+---
+
+**2026-06-21 (earlier, SUPERSEDED by the retraction above): SECOND LEAK (call it
+"Leak C") — orphaned `EGLImage` on the `import_dmabuf` error path. Root cause from
+counting; fix built, awaiting runtime verification.** After the Leak-A/B fixes, a desktop session (all apps closed except
 warp) still held **483 MiB** in cosmic-comp (`nvidia-smi`). The SIGUSR1 census
 (snapshot `…-20260621-145039`, PID 375454) was decisive:
 
