@@ -8,6 +8,56 @@ arrives; keep entries dated so the timeline stays legible.
 
 ## Current status
 
+**2026-06-21: SECOND LEAK (call it "Leak C") — orphaned `EGLImage` on the
+`import_dmabuf` error path. Root cause from counting; fix built, awaiting runtime
+verification.** After the Leak-A/B fixes, a desktop session (all apps closed except
+warp) still held **483 MiB** in cosmic-comp (`nvidia-smi`). The SIGUSR1 census
+(snapshot `…-20260621-145039`, PID 375454) was decisive:
+
+```
+GL live objects: textures=38 egl_images=1897 renderbuffers=0 framebuffers=0 buffers=6
+GL raw counters: egl_images_created: 3397, egl_images_destroyed: 1500
+```
+
+`egl_images` is stuck at **1897 live** with only **38 live textures** and a constant
+window set. Counting proves these are *orphaned bare handles*, not texture-owned:
+
+- `use_system_lib` is **off** in cosmic-comp's smithay features, so `EGLBuffer` /
+  `egl_buffer_contents` are not compiled. The *only* compiled `CreateImageKHR` site
+  is `create_image_from_dmabuf` (`egl/display.rs:843`), called from exactly one
+  place: `GlesRenderer::import_dmabuf` (`gles/mod.rs:1305`).
+- Every destroyed EGLImage went through the `GlesTextureInternal::drop` queue
+  (`queued_egl_image == drained_egl_image == egl_images_destroyed == 1500`);
+  `EGLBuffer::drop` fired **0** times.
+- In `import_dmabuf` the single fallible step between creating the image and
+  storing it in a `GlesTexture` is `import_egl_image(image, …)?`. On error the bare
+  `image` handle was dropped — no `GlesTexture` ever owned it, so it was never
+  queued, never `DestroyImageKHR`'d. 3397 created − 1500 texture-owned-and-dropped ≈
+  **1897 leaked on that error path** — exactly the live count. (On the proprietary
+  NVIDIA driver each imported EGLImage backs a real GPU allocation, so this pins
+  hundreds of MiB.)
+
+**Fix (smithay `gles/mod.rs`):** in `import_dmabuf`, when `import_egl_image` errors,
+route the orphaned `EGLImage` through the same deferred-destruction queue a
+`GlesTexture` uses on drop (`CleanupResource::EGLImage`), instead of dropping the
+bare handle. Upstreamable (independent of the multigpu/threadsafe fixes).
+
+**Diagnostic added (instrumentation branch):** an `egl_images_freed_on_import_error`
+counter at that exact path, and a per-`EGLImage` allocation-site registry
+(`debug_egl_image_sites`, gated on `COSMIC_DMABUF_TRACE`) surfaced in the census as
+`egl-image-site n=…` lines.
+
+**Verify (next census on the new build):**
+1. `egl_images` live falls from ~1897 to a few tens (≈ live textures);
+2. `egl_images_freed_on_import_error` reads ≈1897 (confirms this path was the
+   source);
+3. `egl-image-site` survivor groups are empty (or, if any remain, their backtrace
+   names the *next* leak to chase).
+
+The open second-order question — *why* `import_egl_image` fails this often (likely
+benign per-node multigpu import attempts that fall back) — is separate from the
+leak: a failed import must not leak its image regardless.
+
 **2026-06-20: ROOT CAUSE FOUND + ONE-LINE FIX — the leak is smithay's non-thread-safe
 `UserData` deliberately leaking the slot's cached `Dmabuf` when the slot is dropped off
 its creating thread.** The chain, fully closed:
