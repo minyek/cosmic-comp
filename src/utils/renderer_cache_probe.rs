@@ -196,6 +196,40 @@ pub fn group_clone_sites(sites: &[(u64, String)]) -> Vec<(String, String)> {
         .collect()
 }
 
+/// Recorded live `EGLImage` allocation sites — grouped `(label, backtrace)`,
+/// rebuilt wholesale each census, mirroring [`CLONE_SITES`].
+static EGL_IMAGE_SITES: Mutex<Vec<(String, String)>> = Mutex::new(Vec::new());
+
+/// Replace the recorded `EGLImage` allocation sites — `(label, backtrace)` — wholesale.
+pub fn set_egl_image_sites(sites: Vec<(String, String)>) {
+    if let Ok(mut v) = EGL_IMAGE_SITES.lock() {
+        *v = sites;
+    }
+}
+
+/// Every recorded live `EGLImage` allocation site, in census-ready (rarest-first) order.
+pub fn egl_image_sites_snapshot() -> Vec<(String, String)> {
+    EGL_IMAGE_SITES.lock().map(|v| v.clone()).unwrap_or_default()
+}
+
+/// Group live `EGLImage` backtraces (from smithay's `debug_egl_image_sites`) by
+/// identical reduced call site. A handle created but never destroyed leaves a
+/// surviving entry, so the site that accounts for the bulk of survivors is the
+/// leak. Returns `(label, reduced backtrace)` per unique site, largest group last
+/// so the dominant leak site is the final, most visible line.
+pub fn group_egl_image_sites(sites: &[(usize, String)]) -> Vec<(String, String)> {
+    let mut by_site: BTreeMap<String, usize> = BTreeMap::new();
+    for (_handle, backtrace) in sites {
+        *by_site.entry(reduce_clone_backtrace(backtrace)).or_default() += 1;
+    }
+    let mut groups: Vec<(String, usize)> = by_site.into_iter().collect();
+    groups.sort_by_key(|(_, n)| *n);
+    groups
+        .into_iter()
+        .map(|(site, n)| (format!("egl-image-site n={n}"), site))
+        .collect()
+}
+
 /// Reduce a full `Backtrace` string to its meaningful frames — drop std/core/
 /// alloc/backtrace runtime noise, keep the smithay/cosmic-comp call chain with
 /// `file:line`, capped so a census line stays within journald's field limit.

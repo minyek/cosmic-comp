@@ -792,6 +792,14 @@ impl KmsState {
             crate::utils::renderer_cache_probe::group_clone_sites(&clone_sites),
         );
 
+        // Live `EGLImage` allocation sites (COSMIC_DMABUF_TRACE only). An image
+        // created but never destroyed leaves a survivor; the dominant site names
+        // the leak. Same global-registry rebuild-wholesale discipline as above.
+        let egl_image_sites = smithay::backend::renderer::gles::debug_egl_image_sites();
+        crate::utils::renderer_cache_probe::set_egl_image_sites(
+            crate::utils::renderer_cache_probe::group_egl_image_sites(&egl_image_sites),
+        );
+
         // Live swapchain-slot registry: every slot that has had a buffer allocated
         // and not yet been dropped. A slot whose swapchain was replaced but that
         // stays live is the stranded render target; its acquire-path signature

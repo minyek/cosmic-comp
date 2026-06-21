@@ -140,6 +140,12 @@ fn dump_renderer_cache_sizes() {
     for (label, backtrace) in crate::utils::renderer_cache_probe::clone_sites_snapshot() {
         warn!("dmabuf {label}:\n{backtrace}");
     }
+    // Live `EGLImage` allocation sites (COSMIC_DMABUF_TRACE only; empty otherwise).
+    // A surviving handle is a leaked EGLImage; the dominant group's call site names
+    // where the leak is born. Largest group sorts last, so it is the final line.
+    for (label, backtrace) in crate::utils::renderer_cache_probe::egl_image_sites_snapshot() {
+        warn!("{label}:\n{backtrace}");
+    }
 }
 
 fn dump_shell(shell: &Shell) {
