@@ -8,6 +8,53 @@ arrives; keep entries dated so the timeline stays legible.
 
 ## Current status
 
+**2026-06-22: RESOLVED — the residual is an NVIDIA driver leak (confirmed on
+595.71.05 with a standalone reproducer), NOT a compositor object leak.** The
+fresh long-session census (snapshot `…-183219`, PID 1468471, ~25 h, **681 MiB**)
+settled both open questions:
+
+- With the validation-EGLImage accounting now balanced, the honest counters are
+  **all bounded**: `egl_images` 21 live (created 6178 / destroyed 6157),
+  `textures` 45 live (24038/23993), renderbuffers/buffers/framebuffers all
+  `created == destroyed`, every cleanup queue drained. dmabuf-fd inventory flat at
+  **159 MiB** whether nvidia-smi reads 122, 483, or 681 MiB. So Leak A is genuinely
+  fixed and there is **no remaining compositor-side GL-object leak** — every
+  resource cosmic-comp/smithay allocate is freed.
+- The 681 − 159 ≈ **522 MiB of GPU memory has no counted GL handle and no held
+  dmabuf fd.** Per-interval attribution (27 censuses joined to `/tmp/vram.csv`):
+  during *flat*-VRAM stretches the renderer churned **1.14 M framebuffers** with
+  zero VRAM growth (per-frame FBO churn does not leak); VRAM climbed only during
+  *window operations*, tracking **client-buffer import** churn (+13 626 textures,
+  +3 275 EGLImages over the climb).
+
+**Root cause (proven, not inferred — [reproducer](./vram-tools/nvidia-dmabuf-leak-repro/)):**
+a ~90-line standalone program with no compositor code shows that on 595.71.05 the
+driver leaks GPU memory **only when a *foreign* (cross-process) dmabuf is imported
+*and sampled*** in a draw:
+
+| scenario (≈20 k imports) | importer GPU memory |
+|---|---|
+| same-process import + sample | flat ~6 MiB |
+| cross-process import, **no** sample | flat ~6 MiB |
+| cross-process import **+ sample**, one size | →2.2 GB then **plateaus** |
+| cross-process import **+ sample**, varying sizes | 1.5–2.2 GB (bounded) |
+
+The driver makes a private VRAM copy of the foreign buffer on first sample (it
+cannot sample a foreign-layout buffer directly) and **pools that copy instead of
+freeing it** when the `EGLImage`/texture is destroyed. The pool is bounded (~2 GB
+even under extreme churn) but large and slow to release, so for the compositor it
+manifests as elevated, activity-driven, idle-sticky VRAM that resets only on
+restart (matches the login-floor reset). This is the same class of bug reported on
+the NVIDIA forums for kwin/sway/weston ("not freeing VRAM after resizing windows")
+— a driver issue every Wayland compositor hits, **not** a cosmic-comp bug.
+
+**Consequences:** there is nothing left to fix in cosmic-comp/smithay for the
+residual — a compositor must import and sample client buffers. The genuine,
+shippable win is **Leak A** (smithay non-thread-safe `UserData` dmabuf leak,
+verified 635→196 MiB). Open follow-ups are driver-side only: file the NVIDIA bug
+with the reproducer above, and/or test whether a different driver version reclaims
+the pool. The prior EGLImage-leak hypotheses (and "Leak C") are fully retired.
+
 **2026-06-21 (later): "Leak C" RETRACTED — it was an instrumentation artifact, not
 a leak. The `egl_images` counter was lying.** The fixed-build census (snapshot
 `…-155645`, PID 989054) settled it:
