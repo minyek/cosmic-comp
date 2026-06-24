@@ -461,6 +461,7 @@ pub struct CursorStateInner {
     cursors: HashMap<CursorIcon, Cursor>,
     current_image: Option<Image>,
     image_cache: Vec<CachedFrame>,
+    last_cursor_icon: Option<CursorIcon>,
 
     hidden: bool,
     idle_timer: Option<RegistrationToken>,
@@ -693,6 +694,7 @@ impl Default for CursorStateInner {
             cursors: HashMap::new(),
             current_image: None,
             image_cache: Vec::new(),
+            last_cursor_icon: None,
 
             hidden: false,
             idle_timer: None,
@@ -758,6 +760,11 @@ pub fn draw_cursor<R>(
     if let Some(current_cursor) = named_cursor {
         if !draw_default && current_cursor == CursorIcon::Default {
             return;
+        }
+
+        if state.last_cursor_icon != Some(current_cursor) {
+            state.image_cache.clear();
+            state.last_cursor_icon = Some(current_cursor);
         }
 
         let output_scale = scale.x.max(scale.y);
