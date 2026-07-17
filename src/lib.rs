@@ -371,6 +371,7 @@ fn refresh(state: &mut State) {
     KeyboardLayoutState::refresh(state);
     if let state::BackendData::Kms(kms) = &mut state.backend {
         kms.run_scheduled_renderer_cleanup();
+        kms.probe_renderer_caches();
     }
     state.last_refresh = LastRefresh::At(Instant::now());
 }

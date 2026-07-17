@@ -56,7 +56,7 @@ use std::{
     collections::{HashMap, HashSet},
     path::Path,
     sync::{Arc, RwLock, atomic::AtomicBool},
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 mod device;
@@ -744,7 +744,7 @@ impl KmsState {
         Ok(node)
     }
 
-    /// Request a drain of the main-thread renderers' destruction queues on the next refresh.
+    /// Census-only probe of the main-thread renderers' import caches.
     ///
     /// Destroying a surface or buffer drops the textures these renderers imported from it,
     /// which only *queues* the GL deletions on their contexts; the queues are flushed by
@@ -763,6 +763,55 @@ impl KmsState {
             })
         {
             debug!(?err, "Failed to drain main-thread renderer cleanup queue");
+        }
+    }
+
+    /// Observation only — it does **not** drain or invalidate anything itself; the
+    /// fix under test manages the caches event-driven (invalidate after each
+    /// infrequent render, destruction-scheduled drains). The census therefore
+    /// observes the fix's steady state: a missed main-thread render site shows up
+    /// as imports of still-live buffers lingering here between configs. Note the
+    /// destroy-driven drain prunes dead-buffer entries as a side effect, so a
+    /// missed site is visible chiefly through its live-buffer imports.
+    pub fn probe_renderer_caches(&mut self) {
+        if !self.session.is_active() {
+            return;
+        }
+        match self.api.devices_mut() {
+            Ok(devices) => {
+                for device in devices {
+                    let node = *device.node();
+                    let renderer = device.renderer_mut();
+                    crate::utils::renderer_cache_probe::record(
+                        format!("main {node:?}"),
+                        renderer.debug_dmabuf_cache_len(),
+                    );
+                    let (alive, dead) = renderer.debug_dmabuf_cache_report();
+                    crate::utils::renderer_cache_probe::record_detail(
+                        format!("main {node:?}"),
+                        crate::utils::renderer_cache_probe::format_cache_report(&alive, dead),
+                    );
+                    crate::utils::renderer_cache_probe::record_detail(
+                        format!("main origins {node:?}"),
+                        crate::utils::renderer_cache_probe::format_cache_origins(&alive),
+                    );
+                    // Heap address of each full-output leaked dmabuf, for the
+                    // core-dump holder search (`gcore` + memory scan for the
+                    // ArcInner = ptr - 16).
+                    let ptrs = renderer
+                        .debug_dmabuf_cache_ptrs()
+                        .into_iter()
+                        .filter(|(_, w, h, _)| (*w as i64) * (*h as i64) >= 1280 * 720)
+                        .map(|(id, w, h, ptr)| format!("{id}@{w}x{h}=0x{ptr:x}"))
+                        .collect::<Vec<_>>()
+                        .join(" ");
+                    crate::utils::renderer_cache_probe::record_detail(
+                        format!("main ptrs {node:?}"),
+                        ptrs,
+                    );
+                }
+            }
+            Err(err) => debug!(?err, "Failed to enumerate render devices for census"),
         }
 
         // The per-surface-thread census reports only the *active* compositors, so a stale
@@ -818,6 +867,36 @@ impl KmsState {
             "live_slot_sites".to_string(),
             smithay::backend::allocator::debug_live_slot_sites(),
         );
+
+    }
+
+    /// Request a drain of the main-thread renderers' destruction queues on the next refresh.
+    ///
+    /// Textures imported by the main-thread renderers are dropped when their surface or
+    /// buffer is destroyed, which only *queues* the GL deletions on those contexts. The
+    /// queues are flushed by rendering or an explicit drain — and the main-thread renderers
+    /// may not render again for a long time, pinning the dead client's buffers in VRAM.
+    /// Tying the drain to the destruction event releases them promptly.
+    pub fn schedule_renderer_cleanup(&mut self) {
+        self.pending_renderer_cleanup = true;
+    }
+
+    /// Drain the GL destruction queues of the main-thread renderers, if scheduled.
+    pub fn run_scheduled_renderer_cleanup(&mut self) {
+        if !self.pending_renderer_cleanup || !self.session.is_active() {
+            return;
+        }
+        match self.api.devices_mut() {
+            Ok(devices) => {
+                self.pending_renderer_cleanup = false;
+                for device in devices {
+                    if let Err(err) = device.renderer_mut().cleanup_texture_cache() {
+                        debug!(?err, "Failed to drain main-thread renderer cleanup queue");
+                    }
+                }
+            }
+            Err(err) => debug!(?err, "Failed to enumerate render devices for cleanup"),
+        }
     }
 
     pub fn schedule_render(&mut self, output: &Output) {
