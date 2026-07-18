@@ -35,8 +35,12 @@ imports). These commits fix the secondary, compositor-owned leaks.
   pending activations, and postprocessing.
 - **Dead minimized windows & cursor cache** — cleaned up on removal.
 - **Main-thread renderer cleanup queue** — only drained on reconfigure, pinning
-  imported client buffers in the long-lived main renderers; now drained
-  periodically.
+  imported client buffers in the long-lived main renderers; now handled
+  event-driven: caches are invalidated right after each main-thread render
+  (output reconfiguration, lease scanout tests, screenshots), capture renders
+  drain the queue, and surface/buffer destruction schedules a drain on the next
+  refresh — so a client exiting long after the last reconfigure is released
+  promptly instead of pinning VRAM until the next mode change.
 - **Disconnected clients** — removed from all DRM devices (multi-GPU), not just
   one.
 
