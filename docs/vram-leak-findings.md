@@ -8,6 +8,51 @@ arrives; keep entries dated so the timeline stays legible.
 
 ## Current status
 
+**2026-07-28: event-driven renderer-cache-cleanup fix (PR 2500 addendum) — all
+three mechanisms VERIFIED PASSING in isolation; open watch-item resolved.**
+Completes the 3-cycle retest referenced in the 2026-07-26 entry below (cycle 1 —
+reconfigure — had already passed; cycles 2/3 run this session). Live compositor,
+PID 25988, census via `SIGUSR1` + `journalctl --user -b`, VRAM via `nvidia-smi`
+polled every 10 s:
+
+- **Carried-over watch item resolved:** the prior test round's `renderer cache
+  detail main … alive=1 dead=1` (one stale, not-yet-reaped cache entry) cleared
+  naturally — a zero-cost re-census this session showed `alive=0 dead=0`, matched
+  by an independent census already logged mid-session at 13:27:38. Confirms it was
+  reaped by the destruction-scheduled drain on a later `refresh()`, not a leak.
+- **Mechanism 3 (destruction-scheduled drain), isolated:** single app open→close
+  (gnome-calculator), no monitor toggling. `textures` 69→66, `egl_images` 27→24
+  (net decrease after close), cleanup queue depth 0→0, `dead=0` both sides, VRAM
+  flat (1079→1081 MiB). Pass.
+- **Mechanism 2 (drain-after-capture), isolated:** 4× rapid `cosmic-screenshot`
+  captures. GL live-object counts flat (textures 66→67, egl_images 24→25 —
+  noise-level), queue depth 0→0, `dead=0` both sides. Pass.
+- **Idle-decay check (15 min idle):** census counters byte-for-byte identical
+  before/after (`textures=66 egl_images=24`, `dmabuf_cache` 0/10/13 unchanged,
+  `dead=0` both sides). VRAM oscillated in a tight 1073–1087 MiB band with no
+  directional drift (first sample 1081 MiB, last 1073 MiB) — the plateau
+  signature consistent with the driver dmabuf-pooling behavior below, not
+  compositor-side growth.
+- Mechanism 1 (invalidate-after-reconfigure) had already passed a prior round in
+  this session (3× DP-2/HDMI-A-1 reconfigure cycles, cleanup queue stayed 0,
+  caches bounded).
+
+All three event-driven mechanisms now have isolated, passing evidence. Combined
+with the 2026-06-22 root-cause finding, the remaining VRAM residual is
+attributable to the NVIDIA driver dmabuf-pooling behavior, not a compositor leak.
+
+**2026-07-26: driver leak CONFIRMED STILL PRESENT on 610.43.03** (up from
+595.71.05) — re-ran the standalone reproducer, zero compositor code, after the
+driver package upgrade. `repro_cross_process 20000 1 1920 1080 0` (cross-process
+import + sample, one size): importer climbs 8 → 2278 MiB by iter 2000, then holds
+flat at **~2178 MiB** through iter 20000 — same shape, same order of magnitude as
+the original finding below. Control (`draw=0`, import without sampling) stays
+flat at **6 MiB** the entire run, isolating the trigger to import+sample exactly
+as before. Not fixed upstream in this driver revision; still not a cosmic-comp
+bug. This is a separate check from the compositor-level 3-cycle event-driven-cache
+retest (cycle 1 — reconfigure — passed on its own tracked counters; cycles 2/3 —
+capture, client-exit — not yet run).
+
 **2026-06-22: RESOLVED — the residual is an NVIDIA driver leak (confirmed on
 595.71.05 with a standalone reproducer), NOT a compositor object leak.** The
 fresh long-session census (snapshot `…-183219`, PID 1468471, ~25 h, **681 MiB**)
