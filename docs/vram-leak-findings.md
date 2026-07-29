@@ -8,6 +8,54 @@ arrives; keep entries dated so the timeline stays legible.
 
 ## Current status
 
+**2026-07-29: post-rebase regression round — all three mechanisms RE-VERIFIED
+PASSING on the rebased smithay; no regression from the tablet/dmabuf API
+migration. Cleared to switch to the clean build.** The 2026-07-28 verdicts below
+predate the smithay rebase onto current upstream (reworked tablet types, dmabuf
+preference tranches) and the review-hardening of `invalidate_caches`, so this
+round re-runs the three mechanisms against the build that actually carries them.
+Running binary verified identical to the instrumented worktree build
+(md5 `8756399b…`); compositor PID 5303; census via `SIGUSR1`, VRAM sampled every
+10 s.
+
+- **Mechanism 3 (destruction-scheduled drain), isolated:** app open→close.
+  `toplevels` 3→4→3 confirms the client really mapped and exited. `textures`
+  37→43→**34** and `egl_images` 26→31→**23** both settled *below* baseline;
+  dmabuf caches returned to `main=0 / DP-2=14 / HDMI-A-1=9`; queue depth 0,
+  `dead=0` throughout. Pass.
+- **Mechanism 2 (drain-after-capture), isolated:** 4× non-interactive
+  `cosmic-screenshot`. `textures` 37→36, `egl_images` 26→25, `sessions` and
+  `offscreen_renderbuffers` 0 on both sides, queue 0, `dead=0`. Pass.
+- **Mechanism 1 (invalidate-after-reconfigure), isolated:** 3× DP-2
+  power-cycle. Counters bracket-identical across the cycles — `egl_images` 20→20,
+  caches `0/8/11` → `0/8/11`, `alive=0 dead=0`, queue 0 (`textures` 37→43 sits
+  inside the round's observed 33–46 idle oscillation band). The decisive evidence
+  is slot lifetime: the DP-2 swapchain regenerated through generations
+  202→288→301→314 while `live_slots` stayed pinned at **4–5** (2 × 2560x1600 +
+  2–3 × 3840x2160), i.e. every superseded generation was freed rather than
+  accumulating. `live surface threads=2 == outputs` — no stranded surface
+  threads. Pass.
+- **Idle-decay check (~4.5 min, no interaction):** counters byte-for-byte
+  identical (`textures=37 egl_images=20`, caches `0/8/11`, `dead=0`); VRAM in a
+  332–359 MiB band with no directional drift.
+- **No errors anywhere in the round:** zero `GL:` errors and zero GL error
+  backtraces (against 122× `GL_INVALID_VALUE … Size and/or offset out of range`
+  in the pre-fix 3.8-day run), zero DRM/atomic commit failures across ~6 monitor
+  reconfigures, `egl_images_freed_on_import_error: 0`. The only `GL:` output was
+  NVIDIA `GL_PIXEL_PACK_BUFFER` *performance* hints from the screenshot readback.
+
+**Monitor reconfigure is the most VRAM-expensive workflow, and the cost is
+driver-side.** The three clean power-cycles moved cosmic-comp 345 → **531 MiB**,
+which then held flat for 3+ min with every compositor-side counter unchanged —
+the runbook §4 "counters flat, VRAM climbs" branch. Of the 523 MiB live at
+settle, the dmabuf-fd inventory accounts for **271.6 MiB across 30 fds** as
+genuinely pinned live buffers, leaving ~251 MiB with no GL handle and no held
+dmabuf fd. Each reconfigure allocates a fresh 4K swapchain generation whose
+slots are imported and sampled cross-process, so this is the 2026-06-22
+root-caused NVIDIA pooling behaviour hitting its most expensive input, not a new
+compositor leak. Worth knowing operationally: a user who power-cycles displays
+often will see the sticky floor rise faster than one who does not.
+
 **2026-07-28: event-driven renderer-cache-cleanup fix (PR 2500 addendum) — all
 three mechanisms VERIFIED PASSING in isolation; open watch-item resolved.**
 Completes the 3-cycle retest referenced in the 2026-07-26 entry below (cycle 1 —
