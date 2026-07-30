@@ -1508,9 +1508,24 @@ instrumentation):
 strings /usr/bin/cosmic-comp | grep -E 'VRAM/resource census|SIGUSR1 dumper installed'  # must hit
 ```
 
-## Known latent bug (not the leak)
+## Known latent bug (not the leak) — FIXED 2026-07-30
 
 `image_copy_capture/render.rs:299` → `Output::remove_session` (`user_data.rs:171`)
 does `.get::<ImageCopySessionsData>().unwrap()`, which panics if the output never
 had an image-copy session — a screencast client can crash the compositor on a
 capture-failure path. Guard the `get`. Did not fire this session.
+
+**Fixed in `5bbb12e8` (all-fixes, 2026-07-30)** — the root cause was deeper than
+the missing guard: `render_workspace_to_buffer`'s constraints-failure path removed
+a *workspace*-scope session from the *Output*'s holder, where it never lived. On
+outputs without `ImageCopySessionsData` that unwrap panicked; on outputs with it,
+the `retain()` was a silent no-op, so the client never received `stopped` and the
+dead session lingered in `Workspace::image_copy` until client-side destroy. The
+fix removes from the workspace and guards all four holder `remove_*` unwraps.
+The same commit also fixes a second latent panic family the audit surfaced:
+`constraints_for_output`/`constraints_for_toplevel` unwrapped
+`offscreen_renderer()`, so renderer-creation failure (e.g. after a GPU reset)
+panicked during constraint negotiation; both now fail the capture instead.
+The bug exists verbatim on upstream/master — being sent as its own upstream PR,
+separate from the leak PR. No VRAM verdict is affected: the path never fired in
+any capture session (a panic is loud), and no counter or census reads changed.
