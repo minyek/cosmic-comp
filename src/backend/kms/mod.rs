@@ -23,11 +23,7 @@ use smithay::{
         egl::{EGLContext, EGLDevice, EGLDisplay},
         input::InputEvent,
         libinput::{LibinputInputBackend, LibinputSessionInterface},
-        renderer::{
-            Renderer,
-            glow::GlowRenderer,
-            multigpu::{ApiDevice, GpuManager},
-        },
+        renderer::{glow::GlowRenderer, multigpu::GpuManager},
         session::{Event as SessionEvent, Session, libseat::LibSeatSession},
         udev::{UdevBackend, UdevEvent, primary_gpu},
     },
@@ -736,16 +732,9 @@ impl KmsState {
         if !self.pending_renderer_cleanup || !self.session.is_active() {
             return;
         }
-        match self.api.devices_mut() {
-            Ok(devices) => {
-                self.pending_renderer_cleanup = false;
-                for device in devices {
-                    if let Err(err) = device.renderer_mut().cleanup_texture_cache() {
-                        debug!(?err, "Failed to drain main-thread renderer cleanup queue");
-                    }
-                }
-            }
-            Err(err) => debug!(?err, "Failed to enumerate render devices for cleanup"),
+        self.pending_renderer_cleanup = false;
+        if let Err(err) = self.api.cleanup_texture_cache() {
+            debug!(?err, "Failed to drain main-thread renderer cleanup queue");
         }
     }
 
@@ -1339,7 +1328,8 @@ impl KmsGuard<'_> {
         Ok(())
     }
 
-    /// Drop all cached imports held by the main-thread renderers.
+    /// Drop all cached imports held by the main-thread renderers, along with the
+    /// framebuffers cached for copying between a render and a target node.
     ///
     /// Unlike the per-output render threads (which draw every frame), these renderers
     /// only draw during output (re-)configuration. Between those infrequent draws their
@@ -1350,18 +1340,8 @@ impl KmsGuard<'_> {
         if !self.session.is_active() {
             return;
         }
-        match self.api.devices_mut() {
-            Ok(devices) => {
-                for device in devices {
-                    if let Err(err) = device.renderer_mut().invalidate_caches() {
-                        debug!(?err, "Failed to invalidate main-thread renderer caches");
-                    }
-                }
-            }
-            Err(err) => debug!(
-                ?err,
-                "Failed to enumerate render devices for cache invalidation"
-            ),
+        if let Err(err) = self.api.invalidate_caches() {
+            debug!(?err, "Failed to invalidate main-thread renderer caches");
         }
     }
 }
