@@ -120,12 +120,9 @@ impl SessionHolder for Output {
     }
 
     fn remove_session(&mut self, session: &SessionRef) {
-        self.user_data()
-            .get::<ImageCopySessionsData>()
-            .unwrap()
-            .borrow_mut()
-            .sessions
-            .retain(|s| s != session);
+        if let Some(sessions) = self.user_data().get::<ImageCopySessionsData>() {
+            sessions.borrow_mut().sessions.retain(|s| s != session);
+        }
     }
 
     fn sessions(&self) -> Vec<SessionRef> {
@@ -153,12 +150,12 @@ impl SessionHolder for Output {
     }
 
     fn remove_cursor_session(&mut self, session: &CursorSessionRef) {
-        self.user_data()
-            .get::<ImageCopySessionsData>()
-            .unwrap()
-            .borrow_mut()
-            .cursor_sessions
-            .retain(|s| s != session);
+        if let Some(sessions) = self.user_data().get::<ImageCopySessionsData>() {
+            sessions
+                .borrow_mut()
+                .cursor_sessions
+                .retain(|s| s != session);
+        }
     }
 
     fn cursor_sessions(&self) -> Vec<CursorSessionRef> {
@@ -244,12 +241,9 @@ impl SessionHolder for CosmicSurface {
     }
 
     fn remove_session(&mut self, session: &SessionRef) {
-        self.user_data()
-            .get::<ImageCopySessionsData>()
-            .unwrap()
-            .borrow_mut()
-            .sessions
-            .retain(|s| s != session);
+        if let Some(sessions) = self.user_data().get::<ImageCopySessionsData>() {
+            sessions.borrow_mut().sessions.retain(|s| s != session);
+        }
     }
     fn sessions(&self) -> Vec<SessionRef> {
         self.user_data()
@@ -276,12 +270,12 @@ impl SessionHolder for CosmicSurface {
     }
 
     fn remove_cursor_session(&mut self, session: &CursorSessionRef) {
-        self.user_data()
-            .get::<ImageCopySessionsData>()
-            .unwrap()
-            .borrow_mut()
-            .cursor_sessions
-            .retain(|s| s != session);
+        if let Some(sessions) = self.user_data().get::<ImageCopySessionsData>() {
+            sessions
+                .borrow_mut()
+                .cursor_sessions
+                .retain(|s| s != session);
+        }
     }
 
     fn cursor_sessions(&self) -> Vec<CursorSessionRef> {
