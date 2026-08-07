@@ -1,38 +1,51 @@
-# VRAM-leak capture scripts
+# VRAM capture and regression-test scripts
 
-Canonical copies of the two user-run capture scripts for the VRAM-leak hunt.
-They live in the repo so a reboot wiping `/tmp` (or a `dnf` reinstall) never
-again forces reconstructing them from prose. See
-[`../vram-leak-runbook.md`](../vram-leak-runbook.md) for the full procedure.
+Two toolsets share this directory. For a full regression pass against an
+installed build, follow
+[`../vram-regression-test-process.md`](../vram-regression-test-process.md); for
+exploratory leak hunting, follow
+[`../vram-leak-runbook.md`](../vram-leak-runbook.md).
+
+Run them straight from the worktree — the desktop user is in the `work` group, so
+no copying to `/tmp` is needed. Only the capture output lives in `/tmp/vram-ctl/`.
+
+## Regression pass
+
+- **`preflight.sh`** — refuses to start unless the running compositor really is
+  the build under test: census strings present, binary older than the session,
+  optional md5 match against a given `target/release/cosmic-comp`, input tooling
+  and ydotoold up. Pass the build path to get the identity check.
+- **`session.sh`** — the capture session. Samples cosmic-comp's VRAM every 10 s
+  and serves `census`/`snapshot`/`stop` commands dropped into `/tmp/vram-ctl/cmd`,
+  writing every reading back world-readable. This is what lets a second,
+  unprivileged account drive and analyse a session it can neither signal nor read
+  the journal of. Also captures the journal if the compositor dies.
+- **`drive.sh`** — the phases: `selftest`, `monitors`, `apps`, `capture`,
+  `popups`, `zoom`, `workspaces`, `pointer`, `minimize`, or `all` for an
+  unattended run that censuses at every boundary. Input goes through ydotool;
+  see the process doc for why wtype cannot work here.
+- **`census.py`** — `verdict` for a machine-checked PASS/FAIL (non-zero exit on
+  failure, so it can gate a release), `diff` for a counter table across captures.
+
+## Leak hunting
 
 - **`vram-watch.sh`** — `flock`-guarded single-instance sampler. Logs
   cosmic-comp's own `nvidia-smi` VRAM row every 60 s to `/tmp/vram.csv`
   (`YYYY-MM-DD-HH:MM:SS,<MiB>`) and fires a SIGUSR1 census at start + hourly.
+  Use for multi-day soaks, where `session.sh` would be overkill.
 - **`leak-snapshot.sh`** — point-in-time snapshot into
-  `/tmp/leak-snapshot-<ts>/`: census (via SIGUSR1 → journal), `nvidia-smi`,
-  open-fd count, dma-buf fdinfo inventory + summary (pinned client buffers vs
-  compositor-internal GL objects), `/proc/<pid>/status` `Vm*` lines, and the
-  journal. The whole dir is `chmod -R a+rX` for the two-actor hand-off.
-
-## Two-actor deploy
-
-The compositor runs as `andy` (uid 1000); the agent as `agent` (uid 1001) and
-**cannot** signal the compositor or read its journal. So **andy runs the
-scripts**; the agent only authors/redeploys them. After any reboot, redeploy to
-`/tmp` and run:
-
-```bash
-cp docs/vram-tools/*.sh /tmp/ && chmod a+rx /tmp/*.sh   # redeploy
-setsid /tmp/vram-watch.sh & disown                      # sampler + hourly census
-sh /tmp/leak-snapshot.sh                                # one snapshot
-```
+  `/tmp/leak-snapshot-<ts>/`: census, `nvidia-smi`, open-fd count, dma-buf fdinfo
+  inventory + summary (pinned client buffers vs compositor-internal GL objects),
+  `/proc/<pid>/status` `Vm*` lines, and the journal.
+- **`reverse-ref-scan.py`** — static scan for the reference patterns that caused
+  the original leaks.
 
 ## Prerequisite: the running compositor must be OUR instrumented build
 
 `SIGUSR1` and `GL_KHR_debug` only do anything if the live `/usr/bin/cosmic-comp`
 is the instrumented counter build, **not** the Fedora distro RPM (a `dnf`
-operation can silently overwrite it — observed 2026-06-13). Verify before
-trusting any capture:
+operation can silently overwrite it — observed 2026-06-13). `preflight.sh` checks
+this; to verify by hand:
 
 ```bash
 # our build contains these strings; the distro RPM contains none of them

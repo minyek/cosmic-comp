@@ -61,9 +61,39 @@ between `cleanup_texture_cache` (retains live entries, prunes dead ones) and
 The GL backends need a real context and remain untested, like
 `cleanup_texture_cache` itself.
 
-Runtime-verified indirectly via the consuming cosmic-comp fix: with
-`invalidate_caches()` wired into the main-thread renderer, isolated tests of
-reconfigure cycles, capture-render drains, and destruction-scheduled drains
-all show the renderer's GL cleanup queue and dmabuf import caches staying flat
-and bounded across the exercised event, with no residual growth over a 15
-minute idle window after activity.
+Runtime-verified indirectly via the consuming cosmic-comp fix, which calls
+`invalidate_caches()` on its main-thread renderer. The most recent pass was a
+scripted full-desktop run on a dual-output NVIDIA system — 27 GPU-resource
+censuses over 2.5 hours, each workflow driven in isolation so the deltas are
+attributable:
+
+- **Output reconfiguration**, the case this method exists for: three
+  power-cycles regenerated the 4K swapchain through ~338 slot generations while
+  live slots stayed pinned at 5. Every superseded generation's imports were
+  released rather than accumulating, which is what invalidating right after an
+  infrequent render is supposed to achieve.
+- **Screencopy**: 12 renderbuffers created and 12 freed across 6 captures, with
+  no capture session, offscreen renderbuffer or pending frame outliving its
+  client.
+- **Client churn**: 99 EGLImages and 9,379 textures created *and* destroyed
+  across 10 client open/close cycles, with every renderer cache value identical
+  before and after.
+- **Cache growth is bounded, not merely slow**: the retained dmabuf import
+  caches saturate — live textures 58, 66 and 70 after 1, 2 and 11
+  workspace-overview cycles, then flat through three further workflows and a
+  90 s idle.
+
+The renderer's GL cleanup queue was empty in all 27 censuses, no cache held a
+dead entry, and no GL error was logged in any phase.
+
+**Not covered:** the machine has a single GPU, so `MultiRenderer`'s
+cross-device invalidation was exercised only in its render/target form, not
+across separate render and target *devices*. The pixman unit tests remain the
+only direct coverage of the semantics.
+
+**Caveat on the reconfiguration figures:** those measurements come from an
+instrumented cosmic-comp build that also carries a consumer-side fix (a
+synchronous surface-thread join on connector removal) which is not yet on the
+cosmic-comp branch being submitted. It affects cosmic-comp's own teardown, not
+`invalidate_caches` semantics, but it means the reconfigure numbers describe a
+slightly better-behaved consumer than the one currently in review.

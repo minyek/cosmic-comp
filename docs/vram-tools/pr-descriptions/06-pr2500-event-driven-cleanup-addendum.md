@@ -45,7 +45,18 @@ involved.
 
 ## Verification
 
-Compile-verified as above. Runtime verification runs on the instrumented
-census build (`all-fixes-instrumented-invalidate` branches): the census now
-observes the fix's steady state — main-thread import caches and destruction
-queues must stay bounded across client exits, captures, and reconfigures.
+Compile-verified as above. Runtime-verified on the instrumented census build
+(`all-fixes-instrumented-invalidate` branches) by a scripted full-desktop pass:
+27 censuses over 2.5 hours on a dual-output NVIDIA system, each workflow driven
+in isolation. Main-thread import caches and destruction queues stayed bounded
+across client exits, captures and reconfigures — the cleanup queue was empty in
+every census, no cache retained a dead entry, three output power-cycles
+regenerated ~338 swapchain slot generations against 5 live slots, and 10 client
+open/close cycles created and destroyed 99 EGLImages while leaving every cache
+value unchanged.
+
+The reconfigure figures carry one caveat: the instrumented build also holds a
+connector-removal `drop_and_join()` that is not on the clean branch (it sits
+inside `95411f26`, a "do not merge" commit). Monitor power-cycles take that
+path, so either hoist the fix onto the shipped branch or re-measure before
+relying on those numbers.

@@ -8,6 +8,131 @@ arrives; keep entries dated so the timeline stays legible.
 
 ## Current status
 
+**2026-08-06: full-desktop regression pass on the installed build — every fix on
+the branch verified against live interaction; no leak found.** Running
+`/usr/bin/cosmic-comp` verified identical to the `instr-invalidate` worktree
+build (md5 `5b013f3a…`, branch tip `c4a02f9b`); compositor PID 5334, installed
+16:14 and session started 16:52, so the live compositor is the build under test.
+27 censuses over 158 min, VRAM sampled every 10 s. Dual output DP-2 (3840x2160)
++ HDMI-A-1 (2560x1600). `COSMIC_GL_DEBUG` was *not* enabled this round.
+
+- **Monitor reconfigure (3× DP-2 power-cycle):** DP-2 slot generations went
+  `[1,3]` → `[338,339,341]` — ~338 swapchain generations allocated — while
+  `live_slots` stayed pinned at **5** and later fell back to 4. Every superseded
+  generation was freed. `surface_threads=2 == outputs`, queue depth 0, `dead=0`.
+  VRAM 155 → 339 MiB (+184), sticky, of which the dmabuf inventory accounts for
+  only +35 MiB — reproducing the 2026-07-29 figure (+186 MiB) within 2 MiB, i.e.
+  the same driver-side pooling, not a compositor leak.
+- **Client churn (10× open/close):** every counter byte-for-byte identical
+  across the phase (toplevels 6→6, textures 45→45, egl_images 22→22, caches
+  9/13 unchanged, VRAM 675→675 MiB), while the raw counters prove the workload
+  ran: **+99 EGLImages created / +99 destroyed**, **+9,379 textures created /
+  +9,379 destroyed**.
+- **Image-copy capture (6× `cosmic-screenshot`):** renderbuffers **+12 created /
+  +12 destroyed**, live renderbuffers 0, `sessions`/`offscreen`/`pending_frames`
+  0 at output, workspace and surface scope. No panic on any capture path.
+- **Workspace overview (11 open/close):** `ws_sessions` 0→**4**→0 and
+  `surface_sessions` 0→**6**→0 on every cycle — the `e138ec74` teardown holds.
+  The retained import caches **plateau**: live textures 46→58→66→**70** and
+  `cache.main` alive 0→8→10→**14** over 1, 2 and 11 cycles, then flat through
+  three further phases and 90 s idle. A linear leak would have reached ~+96 by
+  cycle 11; this is a saturating dmabuf import cache.
+- **Popup churn (32 cycles), zoom (24 ops), workspace switching (20) and
+  cross-output window moves (10):** all counters flat; +1,230 EGLImages created
+  and ~1,185 destroyed during the popup phase.
+- **Minimize:** `minimized_windows` 0→**3**→0 tracking three real windows, and 0
+  with no dead residue after a window was killed *while minimized*
+  (`6b9e1b78`'s retain-alive path).
+- **Settle:** VRAM 559 MiB with **460.8 MiB of it pinned client dmabufs**,
+  leaving only ~98 MiB compositor/driver-side.
+- **No compositor panics, no `GL:` errors, no DRM commit failures** in any
+  phase. The 256 `GL_INVALID_OPERATION` lines in the journal are Chrome's own
+  WebGL process, not the compositor.
+
+**Build-delta caveat — the instrumented branch is NOT the clean branch plus
+instrumentation.** A file-by-file audit of `all-fixes..all-fixes-instrumented-invalidate`
+(2026-08-06) found two *functional* differences, in opposite directions, which
+qualify what this round proves:
+
+1. **The tested build lacks the capture-panic fix `5bbb12e8`** — the four
+   `remove_*` unwraps are unguarded, both `offscreen_renderer()` unwraps remain,
+   and `render_workspace_to_buffer` still removes the session from the *Output*
+   rather than the workspace. The screenshot phase therefore exercised the
+   pre-fix code; it did not panic (consistent with that path never firing in
+   normal use) but this round provides **no validation of `5bbb12e8`**, which
+   ships as its own PR. PR 2500 is unaffected — `vram-leak-fixes` lacks the fix
+   by design, so the tested build matches it here.
+2. **The tested build carries an extra fix that ships nowhere:** a third
+   `drop_and_join()` call site in `kms/device.rs`, joining the surface thread
+   synchronously on connector removal, added inside `95411f26 "VRAM-leak debug
+   instrumentation (do not merge)"` and absent from both `all-fixes` and
+   `vram-leak-fixes`. Its comment describes the leak it prevents — a detached
+   thread stalling on the compositor read lock and stranding its renderer,
+   swapchain and postprocess offscreens. **This is the path a monitor
+   power-cycle takes**, and `surface_threads == outputs` is the metric it
+   protects, so the reconfigure results above (and those of the 2026-07-28 and
+   2026-07-29 rounds, which used the same instrumentation commit) may be better
+   than the submitted code achieves. Resolve by hoisting the fix into the PR
+   branch, then re-running the monitors phase.
+
+**Both deltas are now closed** (2026-08-07), so a re-run no longer carries this
+caveat. The panic fix was cherry-picked onto the instrumented branch, and the
+connector-removal join now ships as its own PR branch
+(`fix-surface-thread-leak-on-connector-removal`), whose code is byte-identical
+to the instrumented copy — only the explanatory comment differs, which the PR
+carries in its commit message instead. Both branches were then rebased onto
+cosmic-comp `d3ffa814`, so the instrumented build also exercises upstream's
+wl-dmabuf v6 support rather than the local API-migration shim it supersedes.
+A fresh audit against `all-fixes` finds the remaining delta is instrumentation
+only: added census/probe modules and counters, one `gl_debug::try_install`
+call, import-line rewrites, a `render_result` → `res` rename in
+`screenshot.rs`, and comment wording.
+
+The panic fix stays **unvalidatable by this harness** either way: it converts
+`unwrap()` into `if let Some(...)` on failure paths that do not fire in normal
+use, so no census counter can observe it. Only fault injection would cover it.
+
+Everything else differs only by instrumentation, rustfmt wrapping, a variable
+rename and doc-comment wording. On the smithay side the instrumented branch *is*
+`renderer/invalidate-caches` plus instrumentation, with every modified existing
+line a tracking hook that is inert unless `COSMIC_DMABUF_TRACE` is set.
+
+**Two instrumentation defects found this round (neither affects any verdict):**
+
+1. **`output_zoom_states` / the per-output `zoom=` flag cannot fall.**
+   `vram_dump.rs:162` reports `user_data().get::<Mutex<OutputZoomState>>()
+   .is_some()`, but smithay's `UserDataMap` has no removal API, so the flag is
+   stuck `true` for the output's lifetime once zoom has been used even once —
+   even though `shell/mod.rs:2582` correctly drops `Shell::zoom_state` when all
+   outputs return to level 1.0 (confirmed visually: no magnification). The
+   counter therefore saturates at `outputs.len()` and can never signal the leak
+   class the runbook's decision table assigns to it. The residual cost is
+   bounded and small: 2 retained `IcedElement`s (`iced_elements` 7→9), no GL
+   textures. The `zoom_state.take()` logic is upstream `0ba0a0cd`, not ours.
+2. **`virtual-keyboard-v1` clients cannot drive compositor shortcuts**, so
+   `wtype` is useless for scripted testing here. Shortcuts are matched in
+   `filter_keyboard_input`, reached only from `process_input_event` on the
+   libinput backend path (`src/input/mod.rs:168,205,257`); virtual-keyboard
+   input goes straight to the focused surface. A wtype-driven phase looks like
+   it ran (timings are sleep-dominated) but changes nothing — caught here only
+   because `egl_images_created` stayed frozen at 1286 across 32 supposed popup
+   opens. Drive synthetic input through **ydotool** (uinput → libinput), which
+   enters the correct path.
+
+**Still not covered:** long-lived screencast sessions (no recorder installed on
+this machine — `cosmic-screenshot` exercises the same handlers but with a
+short-lived session), panel-applet and right-click context-menu popups, and the
+`COSMIC_GL_DEBUG` allocate/delete imbalance pass.
+
+**Unchanged upstream log noise (both files verified unmodified vs upstream in
+our fork):** `Failed to destroy old mode property blob: No such file or
+directory` once per reconfigure (`smithay drm/surface/atomic.rs:815`; ENOENT
+means the kernel already dropped the blob — nothing leaks), and 37×
+`surface missing from known popups` (`smithay wayland/shell/xdg/mod.rs:1994`),
+concentrated in manual menu/applet interaction. The latter is *not* eliminated —
+~337/day here against ~248/day in the pre-fix 3.8-day run — but it correlates
+with no counter growth.
+
 **2026-07-29: post-rebase regression round — all three mechanisms RE-VERIFIED
 PASSING on the rebased smithay; no regression from the tablet/dmabuf API
 migration. Cleared to switch to the clean build.** The 2026-07-28 verdicts below
