@@ -92,15 +92,21 @@ every output a mode before any client can bind a capture source. The
 removal-and-stop code behind those failures — where the workspace-scope capture
 panic lived — therefore needs the fault armed:
 
+The variable has to enter the environment *above* `cosmic-session`;
+`~/.config/environment.d` reaches every COSMIC component except the compositor,
+for the reason set out in runbook §5. Use the same route as the GL-debug pass:
+
 ```bash
-# in the compositor's own environment, before the session starts
-COSMIC_FAULT_CAPTURE_CONSTRAINTS=1
+echo COSMIC_FAULT_CAPTURE_CONSTRAINTS=1 | sudo tee -a /etc/environment
+# log out and back in, then verify it landed, as the desktop user:
+tr '\0' '\n' < /proc/$(pgrep -x cosmic-comp)/environ | grep COSMIC_FAULT
+journalctl --user -b | grep 'Fault armed'
 ```
 
 The compositor logs `Fault armed: …` at startup and
-`Failing screencopy constraints for {workspace,toplevel}` on every fault. Note
-that `~/.config/environment.d` does *not* deliver environment to the compositor
-(runbook §5); it has to reach the process that `cosmic-session` spawns.
+`Failing screencopy constraints for {workspace,toplevel}` on every fault. Remove
+the line from `/etc/environment` and log back in when the round is done — an
+armed session cannot take screenshots or draw overview thumbnails.
 
 Then, against an armed session:
 
