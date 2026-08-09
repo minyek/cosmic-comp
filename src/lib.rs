@@ -166,6 +166,7 @@ pub fn run(hooks: crate::hooks::Hooks) -> Result<(), Box<dyn Error>> {
 
     // install SIGUSR1 handler for on-demand resource census (see utils::vram_dump)
     utils::vram_dump::install_sigusr1_handler();
+    utils::fault_inject::report_armed();
 
     // init event loop
     let mut event_loop = EventLoop::try_new().with_context(|| "Failed to initialize event loop")?;

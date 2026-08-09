@@ -45,7 +45,10 @@ use crate::{
     },
     shell::{CosmicMappedRenderElement, CosmicSurface, WorkspaceRenderElement},
     state::{Common, KmsNodes, State},
-    utils::prelude::{PointExt, PointGlobalExt, RectExt, RectLocalExt, SeatExt},
+    utils::{
+        fault_inject,
+        prelude::{PointExt, PointGlobalExt, RectExt, RectLocalExt, SeatExt},
+    },
     wayland::{
         handlers::image_copy_capture::{
             SessionData, SessionUserData, constraints_for_output, constraints_for_toplevel,
@@ -326,9 +329,21 @@ pub fn render_workspace_to_buffer(
 
     let buffer = frame.buffer();
     let buffer_size = buffer_dimensions(&buffer).unwrap();
-    if mode != Some(buffer_size) {
-        let Some(constraints) = constraints_for_output(&output, &mut state.backend) else {
-            output.remove_session(session);
+    if fault_inject::capture_constraints_armed() || mode != Some(buffer_size) {
+        let Some(constraints) = fault_inject::capture_constraints("workspace", || {
+            constraints_for_output(&output, &mut state.backend)
+        }) else {
+            // Drop the workspace's owned Session so the client receives `stopped`.
+            if let Some(workspace) = state
+                .common
+                .shell
+                .write()
+                .workspaces
+                .space_for_handle_mut(&handle)
+            {
+                workspace.remove_session(session);
+            }
+            frame.fail(CaptureFailureReason::Stopped);
             return;
         };
         session.update_constraints(constraints);
@@ -564,8 +579,12 @@ pub fn render_window_to_buffer(
     let buffer = frame.buffer();
     let geometry = toplevel.geometry();
     let buffer_size = buffer_dimensions(&buffer).unwrap();
-    if buffer_size != geometry.size.to_buffer(1, Transform::Normal) {
-        let Some(constraints) = constraints_for_toplevel(toplevel, &mut state.backend) else {
+    if fault_inject::capture_constraints_armed()
+        || buffer_size != geometry.size.to_buffer(1, Transform::Normal)
+    {
+        let Some(constraints) = fault_inject::capture_constraints("toplevel", || {
+            constraints_for_toplevel(toplevel, &mut state.backend)
+        }) else {
             toplevel.clone().remove_session(session);
             return;
         };
