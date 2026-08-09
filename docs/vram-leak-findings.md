@@ -8,6 +8,51 @@ arrives; keep entries dated so the timeline stays legible.
 
 ## Current status
 
+**2026-08-09: the capture-panic fix is now coverable, and the verdict tool's
+per-phase activity check was found broken and fixed. No new desktop round has
+been run yet — the entry below is still the latest result.**
+
+The 2026-08-06 entry closed the build-delta caveat but left one gap open: the
+capture-panic fix `5bbb12e8` (carried here as `1148a2c7`) was called
+"unvalidatable by this harness", because it only changes paths that fail when an
+output has no current mode or an offscreen renderer cannot be built. Re-reading
+the code confirms why no workload can reach them: `apply_config_for_outputs`
+gives *every* output a mode, disabled ones included, before a client can bind a
+capture source, and smithay's `Output` never clears `current_mode` once set. So
+re-running `drive.sh all` on a build that *contains* the fix would still not test
+it — the round would pass without the fixed lines ever executing.
+
+Closed by `COSMIC_FAULT_CAPTURE_CONSTRAINTS=1` (`src/utils/fault_inject.rs`),
+which fails the constraints query made while rendering a frame and forces every
+frame down the constraint-mismatch branch. The fault deliberately spares the
+query made at session creation: failing there stops the session before any frame
+arrives, and the frame path is the one carrying the code under test. Driven by
+`drive.sh faultall` — see the [process doc](./vram-regression-test-process.md) §5.
+
+**Verdict-tool defect (found 2026-08-09, fixed): phase activity was scored across
+the whole run, not the phase.** `cmd_verdict` computed each expectation's delta
+from `rows[0]` to `rows[-1]`; it also built a per-phase `span` and then discarded
+it (`_ = span`). Compounding it, `all()` never set `$PHASE`, so every expectation
+was recorded under the phase name `all`. A phase that drove nothing therefore
+passed on a busier phase's counters — precisely the failure the activity check
+was added to catch.
+
+*Blast radius on the 2026-08-06 verdict:* the **invariants** half is unaffected
+(evaluated per census, not per phase). The **activity** half is only as good as
+the per-phase counter deltas quoted by hand in that entry — client churn
+(+99/+99 EGLImages, +9,379/+9,379 textures), image-copy capture (+12/+12
+renderbuffers) and popup churn (+1,230 EGLImages) were each read off the counter
+tables and stand. **Zoom, workspace switching and pointer motion were not
+independently evidenced**: all three declare `texture_churn`, and any one of them
+could have satisfied the check for the other two. Their "all counters flat"
+result is therefore un-evidenced, not wrong — re-running now scores each phase
+inside its own `post-<phase>` span and will settle it. No fix verdict changes:
+nothing in that entry rests on those three phases.
+
+The process doc also claimed the dead-run detection was "regression-tested
+against the journals from that dead run". There is no such test in the repo; the
+claim has been removed rather than left standing.
+
 **2026-08-06: full-desktop regression pass on the installed build — every fix on
 the branch verified against live interaction; no leak found.** Running
 `/usr/bin/cosmic-comp` verified identical to the `instr-invalidate` worktree

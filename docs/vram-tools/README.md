@@ -24,8 +24,13 @@ no copying to `/tmp` is needed. Only the capture output lives in `/tmp/vram-ctl/
   `popups`, `zoom`, `workspaces`, `pointer`, `minimize`, or `all` for an
   unattended run that censuses at every boundary. Input goes through ydotool;
   see the process doc for why wtype cannot work here.
+  `faultcapture`/`faultall` cover the capture *failure* paths, and need the
+  compositor started with `COSMIC_FAULT_CAPTURE_CONSTRAINTS=1` — no desktop
+  workload can reach those branches on its own (process doc §5).
 - **`census.py`** — `verdict` for a machine-checked PASS/FAIL (non-zero exit on
   failure, so it can gate a release), `diff` for a counter table across captures.
+  Activity is scored inside each phase's own `post-<phase>` span, and a
+  compositor panic anywhere in the captured journal fails the run.
 
 ## Leak hunting
 

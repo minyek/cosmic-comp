@@ -47,11 +47,31 @@ SETTLED = {
     "pending_frames": "capture frames queued but never completed",
 }
 
-ACTIVITY = {                     # phase expectation -> (counter, minimum delta)
+ACTIVITY = {                     # phase expectation -> (counter, minimum delta in-phase)
     "egl_churn": ("raw.egl_images_created", 20),
     "texture_churn": ("raw.textures_created", 500),
     "renderbuffer_churn": ("raw.renderbuffers_created", 2),
 }
+
+PEAKS = {                        # phase expectation -> (counter, minimum peak in-phase)
+    "ws_sessions_peak": ("ws_sessions", 1),
+    "minimize_tracked": ("minimized_windows", 1),
+}
+
+# Evidence that only exists as journal text: an injected fault leaves no counter behind,
+# so without this the fault round cannot tell "the fix held" from "the fault never fired".
+JOURNAL_EVIDENCE = {             # phase expectation -> (pattern, what its absence means)
+    "fault_fired_workspace": (r"Failing screencopy constraints for workspace",
+                              "the injected fault never reached the workspace capture path"),
+    "fault_fired_toplevel": (r"Failing screencopy constraints for toplevel",
+                             "the injected fault never reached the toplevel capture path"),
+}
+
+CHECKED_ELSEWHERE = {"slot_generations"}   # scored by the swapchain-generation block
+
+# The failure this harness exists to catch leaves no counter behind either: a panicked
+# compositor is simply gone, and the censuses taken before it died all look clean.
+PANIC_RE = re.compile(r"panicked at|panic occurred")
 
 
 def parse_block(lines):
@@ -137,6 +157,27 @@ def collect(directory):
     return sorted(out, key=lambda r: r[0])
 
 
+def phase_spans(rows):
+    """phase -> (baseline row, its own rows), delimited by the post-<phase> marks.
+
+    Scoring a phase against the whole run lets a phase that drove nothing borrow another
+    phase's activity, which is exactly the failure the activity check exists to catch.
+    """
+    spans, start = {}, 0
+    for i, row in enumerate(rows):
+        label = row[1]
+        if label.startswith("post-"):
+            spans[label[len("post-"):]] = (rows[start], rows[start:i + 1])
+            start = i
+    return spans
+
+
+def journal_text(directory):
+    paths = sorted(Path(directory).glob("journal-*.txt")) + \
+            sorted(Path(directory).glob("snapshot-*/journal.txt"))
+    return "\n".join(p.read_text(errors="replace") for p in paths)
+
+
 def cmd_diff(paths):
     columns = []
     for p in paths:
@@ -186,27 +227,48 @@ def cmd_verdict(directory):
 
     # Activity: a phase whose workload never reached the compositor is a failure,
     # not a pass, however flat its counters are.
+    text = journal_text(directory)
+    panics = {line.strip()[:200] for line in text.splitlines()
+              if "cosmic-comp[" in line and PANIC_RE.search(line)}
+    for line in sorted(panics)[:3]:
+        failures.append(f"compositor panic in the journal: {line}")
+
     expectations = Path(directory) / "expectations.csv"
     if expectations.exists():
         wanted = {}
         for row in expectations.read_text().splitlines():
             phase, kind, _ = (row.split(",", 2) + ["", ""])[:3]
             wanted.setdefault(phase, set()).add(kind)
-        for phase, kinds in wanted.items():
-            span = [r for r in rows if phase in r[1] or r[1].startswith("post-" + phase)]
-            for kind in kinds:
-                if kind not in ACTIVITY:
-                    continue
-                counter, minimum = ACTIVITY[kind]
-                if len(rows) < 2:
-                    continue
-                delta = rows[-1][3].get(counter, 0) - rows[0][3].get(counter, 0)
-                if delta < minimum:
-                    failures.append(
-                        f"[{phase}] {counter} advanced by {delta} (< {minimum}) — "
-                        "the workload never reached the compositor"
-                    )
-        _ = span
+        spans = phase_spans(rows)
+        for phase, kinds in sorted(wanted.items()):
+            base, span = spans.get(phase, (rows[0], rows))
+            if phase not in spans:
+                notes.append(f"{phase}: no post-{phase} census — scored against the whole run")
+            for kind in sorted(kinds):
+                if kind in ACTIVITY:
+                    counter, minimum = ACTIVITY[kind]
+                    if len(span) < 2:
+                        continue
+                    delta = span[-1][3].get(counter, 0) - base[3].get(counter, 0)
+                    if delta < minimum:
+                        failures.append(
+                            f"[{phase}] {counter} advanced by {delta} (< {minimum}) — "
+                            "the workload never reached the compositor"
+                        )
+                elif kind in PEAKS:
+                    counter, minimum = PEAKS[kind]
+                    peak = max((r[3].get(counter, 0) for r in span), default=0)
+                    if peak < minimum:
+                        failures.append(
+                            f"[{phase}] {counter} peaked at {peak} (< {minimum}) — "
+                            "the workload never reached the compositor"
+                        )
+                elif kind in JOURNAL_EVIDENCE:
+                    pattern, meaning = JOURNAL_EVIDENCE[kind]
+                    if not re.search(pattern, text):
+                        failures.append(f"[{phase}] {meaning}")
+                elif kind not in CHECKED_ELSEWHERE:
+                    notes.append(f"{phase}: expectation '{kind}' has no check defined")
 
     # Slot generations must advance across a reconfigure while live_slots stays
     # bounded: that pairing is what distinguishes recycling from accumulation.

@@ -124,6 +124,37 @@ capture() {
   expect renderbuffer_churn "each screenshot must create and free renderbuffers"
 }
 
+# The capture constraint queries fail only when an output has no current mode or an
+# offscreen renderer cannot be built. Neither is reachable from a desktop workload, so the
+# removal-and-stop branches behind them need the compositor started with
+# COSMIC_FAULT_CAPTURE_CONSTRAINTS=1. The overview holds workspace- and toplevel-scope
+# sessions at once, so a single workload drives both branches.
+faultcapture() {
+  key $META $W; sleep 3
+  mark fault-overview-OPEN
+  key $ESC; sleep 2
+  if ! grep -qs "Failing screencopy constraints" "$CTL"/journal-*.txt; then
+    echo "no injected fault in the journal — the compositor is not running with"
+    echo "COSMIC_FAULT_CAPTURE_CONSTRAINTS=1 (see the regression-test process doc)"
+    return 1
+  fi
+  for i in $(seq 2 "$ROUNDS"); do
+    key $META $W; sleep 2.5
+    key $ESC; sleep 1.5
+    echo "round $i/$ROUNDS (overview open/close against failing constraints)"
+  done
+  if command -v cosmic-screenshot >/dev/null; then
+    local out=${TMPDIR:-/tmp}/vram-ctl-shots
+    mkdir -p "$out"
+    for i in $(seq 1 3); do
+      cosmic-screenshot --interactive=false --notify=false --save-dir "$out" >/dev/null 2>&1
+      sleep 2
+    done
+  fi
+  expect fault_fired_workspace "the workspace capture path must take the injected failure"
+  expect fault_fired_toplevel "the toplevel capture path must take the injected failure"
+}
+
 popups() {
   for i in $(seq 1 "$ROUNDS"); do
     key $META $SLASH; sleep 1.0; key $ESC; sleep 0.6   # launcher
@@ -203,26 +234,49 @@ minimize() {
   echo "minimize phase complete (closed while minimized)"
 }
 
+# Run one phase under its own $PHASE, so its expectations and its closing census
+# both carry its name and census.py can score activity inside the phase's own span
+# rather than across the whole run.
+run_phase() {                      # run_phase <name> [rounds]
+  PHASE=$1
+  ROUNDS=${2:-$ROUNDS}
+  "$PHASE"
+  mark "post-$PHASE"
+}
+
 all() {
   : > "$CTL/expectations.csv"
   mark baseline
-  selftest
-  ROUNDS=3; monitors;    mark post-monitors
-  ROUNDS=10; apps;       mark post-apps
-  ROUNDS=6; capture;     mark post-capture
-  ROUNDS=8; popups;      mark post-popups
-  ROUNDS=6; zoom;        mark post-zoom
-  ROUNDS=5; workspaces;  mark post-workspaces
-  ROUNDS=5; pointer;     mark post-pointer
-  minimize;              mark post-minimize
+  run_phase selftest
+  run_phase monitors 3
+  run_phase apps 10
+  run_phase capture 6
+  run_phase popups 8
+  run_phase zoom 6
+  run_phase workspaces 5
+  run_phase pointer 5
+  run_phase minimize
   echo "settling for 90s"; sleep 90
   printf 'snapshot settle' > "$CTL/cmd.tmp" && mv "$CTL/cmd.tmp" "$CTL/cmd"; sleep 10
   echo
   echo "all phases complete — run: python3 census.py verdict $CTL"
 }
 
+# Kept out of `all`: with the fault armed every capture fails, so the ordinary capture
+# phase could not evidence the renderbuffer churn it is there to prove.
+faultall() {
+  : > "$CTL/expectations.csv"
+  mark baseline
+  run_phase faultcapture 6
+  echo "settling for 60s"; sleep 60
+  printf 'snapshot settle' > "$CTL/cmd.tmp" && mv "$CTL/cmd.tmp" "$CTL/cmd"; sleep 10
+  echo
+  echo "fault round complete — run: python3 census.py verdict $CTL"
+}
+
 case "$PHASE" in
-  selftest|monitors|apps|capture|popups|zoom|workspaces|pointer|minimize) "$PHASE" ;;
+  selftest|monitors|apps|capture|popups|zoom|workspaces|pointer|minimize|faultcapture) "$PHASE" ;;
   all) all ;;
-  *) echo "usage: $0 {all|selftest|monitors|apps|capture|popups|zoom|workspaces|pointer|minimize} [rounds]"; exit 2 ;;
+  faultall) faultall ;;
+  *) echo "usage: $0 {all|faultall|selftest|monitors|apps|capture|popups|zoom|workspaces|pointer|minimize|faultcapture} [rounds]"; exit 2 ;;
 esac

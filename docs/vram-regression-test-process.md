@@ -82,7 +82,43 @@ python3 docs/vram-tools/census.py diff  /tmp/vram-ctl/journal-*.txt   # counter 
 
 `verdict` exits non-zero on failure, so it can gate a release.
 
-## What the verdict actually checks, and why it is two things
+## 5. The fault round (capture failure paths)
+
+The steps above never exercise the capture *failure* paths, because nothing a
+desktop does can provoke them: `constraints_for_output` and
+`constraints_for_toplevel` return `None` only when an output has no current mode
+or an offscreen renderer cannot be built, and `apply_config_for_outputs` gives
+every output a mode before any client can bind a capture source. The
+removal-and-stop code behind those failures — where the workspace-scope capture
+panic lived — therefore needs the fault armed:
+
+```bash
+# in the compositor's own environment, before the session starts
+COSMIC_FAULT_CAPTURE_CONSTRAINTS=1
+```
+
+The compositor logs `Fault armed: …` at startup and
+`Failing screencopy constraints for {workspace,toplevel}` on every fault. Note
+that `~/.config/environment.d` does *not* deliver environment to the compositor
+(runbook §5); it has to reach the process that `cosmic-session` spawns.
+
+Then, against an armed session:
+
+```bash
+bash docs/vram-tools/drive.sh faultall
+python3 docs/vram-tools/census.py verdict /tmp/vram-ctl
+```
+
+The workspace overview holds workspace- *and* toplevel-scope sessions at once, so
+one workload drives both branches. The phase aborts if it sees no fault in the
+journal after its first cycle, which is what distinguishes "the fix held" from
+"the environment never reached the compositor".
+
+This round is deliberately separate from `all`: with the fault armed every
+capture fails, so the ordinary `capture` phase could not evidence the
+renderbuffer churn it exists to prove.
+
+## What the verdict actually checks, and why it is three things
 
 **Invariants** — cleanup queues drained, no `dead` cache entries, no capture
 sessions or offscreen renderbuffers outliving their client, `surface_threads ==
@@ -93,9 +129,18 @@ This half exists because the pass condition for a leak test is "counters stayed
 flat", which is indistinguishable from "the workload never ran". On 2026-08-06 an
 entire suite of popup, zoom and workspace phases reported success having done
 nothing at all, and it was caught only by noticing `egl_images_created` frozen
-across 32 supposed popup opens. `census.py verdict` now fails that case outright,
-and its own detection of it is regression-tested against the journals from that
-dead run.
+across 32 supposed popup opens. `census.py verdict` now fails that case outright.
+
+**Journal evidence** — a compositor panic anywhere in the captured journal fails
+the run, and the fault round additionally requires both injected-fault messages.
+Neither leaves a counter behind: a panicked compositor is simply gone, and every
+census taken before it died looks clean.
+
+Activity and peaks are scored **inside each phase's own span**, delimited by the
+`post-<phase>` boundary censuses. Scoring against the whole run let a phase that
+drove nothing borrow a busier phase's counters — which is the exact failure the
+activity check exists to catch, so `all` now sets `$PHASE` per phase and marks a
+boundary after each.
 
 ## Traps
 
@@ -129,3 +174,8 @@ with short-lived sessions), **panel-applet and right-click context menus** (they
 need pointer coordinates the harness does not know), and the `COSMIC_GL_DEBUG`
 allocate/delete imbalance pass, which needs the env to reach the compositor —
 see runbook §5, and note `~/.config/environment.d` does *not* deliver it.
+
+The fault round covers the two constraints-failure branches only. The idempotent
+`remove_session`/`remove_cursor_session` hardening on `Output` and
+`CosmicSurface` is defence-in-depth for callers that remove twice; no caller does
+so today, so it remains verified by inspection rather than by the harness.
