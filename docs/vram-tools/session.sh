@@ -35,6 +35,18 @@ say() { echo "$(date +%T) $*" | tee -a "$LOG"; chmod a+r "$LOG" 2>/dev/null; }
 # and keeps the incremental dumps small.
 journalctl --user -b --cursor-file="$CURSOR" -n 0 >/dev/null 2>&1
 
+# A previous round's captures are archived rather than left in place: the sequence
+# numbers restart here, so any journal whose label differs from its counterpart in
+# this round survives it, and census.py globs the directory as one run. The archive
+# name matches neither glob, so the round it holds stays readable but unscored.
+if compgen -G "$CTL/journal-*.txt" >/dev/null || [ -e "$CTL/expectations.csv" ]; then
+  PREVIOUS=$CTL/previous-$(date +%H%M%S)
+  mkdir -p "$PREVIOUS"
+  mv "$CTL"/journal-*.txt "$CTL"/snapshot-* "$CTL"/expectations.csv "$PREVIOUS"/ 2>/dev/null
+  chmod -R a+rX "$PREVIOUS"
+  echo "archived the previous round to $PREVIOUS"
+fi
+
 : > "$CSV"; : > "$MARKS"; : > "$LOG"
 echo "time,mib" >> "$CSV"
 echo "seq,time,label,mib" >> "$MARKS"
