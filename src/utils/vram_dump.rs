@@ -74,6 +74,8 @@ fn dump_resource_census(state: &State) {
 
     dump_gl_object_counters();
 
+    dump_workload_counters();
+
     dump_renderer_cache_sizes();
 
     // No-op unless COSMIC_GL_DEBUG recorded messages; surfaces the GL
@@ -115,6 +117,14 @@ fn dump_gl_object_counters() {
         live(c.queued_sync, c.drained_sync),
     );
     warn!("GL raw counters: {c:?}");
+}
+
+fn dump_workload_counters() {
+    let c = crate::utils::workload_counters::workload_counters();
+    warn!(
+        "workload counters: pointer_motions={} workspace_activations={} zoom_changes={}",
+        c.pointer_motions, c.workspace_activations, c.zoom_changes,
+    );
 }
 
 /// Per-renderer `dmabuf_cache` length recorded by each render thread after its

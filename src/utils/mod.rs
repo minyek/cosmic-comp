@@ -15,3 +15,4 @@ pub mod rlimit;
 pub mod screenshot;
 pub mod tween;
 pub mod vram_dump;
+pub mod workload_counters;

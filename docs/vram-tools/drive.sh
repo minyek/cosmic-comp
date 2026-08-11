@@ -64,7 +64,12 @@ mark() {                           # census, blocking until it lands
 # condition, which is indistinguishable from "the phase never ran" unless the
 # workload is separately evidenced — so each phase records what to expect and
 # census.py verdict fails the phase if the evidence is absent.
-expect() { echo "$PHASE,$1,$2" >> "$CTL/expectations.csv"; }
+#
+# The phase supplies the minimum, because only the phase knows how many rounds it
+# ran; each is derived below from the per-round cost of the workload, kept well
+# under what the workload actually produces so the check fails on a dead phase
+# rather than on a slow one.
+expect() { echo "$PHASE,$1,$2,$3" >> "$CTL/expectations.csv"; }
 
 selftest() {
   echo "opening workspace overview (Super+w), censusing while open"
@@ -72,7 +77,7 @@ selftest() {
   mark overview-OPEN
   key $ESC; sleep 3
   mark overview-closed
-  expect ws_sessions_peak "overview-OPEN must show ws_sessions > 0"
+  expect ws_sessions_peak 1 "overview-OPEN must show ws_sessions > 0"
 }
 
 # cosmic-randr reconfigures through the same apply_config_for_outputs path a
@@ -99,7 +104,7 @@ monitors() {
     cosmic-randr enable  "$target" >/dev/null 2>&1; sleep 10
     echo "cycle $i/$ROUNDS"
   done
-  expect slot_generations "swapchain generations must advance while live_slots stays bounded"
+  expect slot_generations 0 "swapchain generations must advance while live_slots stays bounded"
 }
 
 apps() {
@@ -111,15 +116,20 @@ apps() {
     # The launcher re-execs, so the job pid is a stub — target the live process.
     pid=$(pgrep -n -x "$app")
     if [ -z "$pid" ]; then echo "cycle $i: $app never appeared"; continue; fi
+    # A toplevel count taken between cycles is back at the phase baseline, so the
+    # one census that can evidence the launches is taken while a window is up.
+    [ "$i" = 1 ] && mark apps-window
     kill "$pid" 2>/dev/null
     for _ in $(seq 1 20); do kill -0 "$pid" 2>/dev/null || break; sleep 0.5; done
     kill -0 "$pid" 2>/dev/null && kill -9 "$pid" 2>/dev/null
     echo "cycle $i/$ROUNDS (closed pid $pid)"
     sleep 2
   done
-  local left; left=$(pgrep -c -x "$app" 2>/dev/null || echo 0)
+  # pgrep -c prints its zero count *and* exits non-zero when nothing matches, so the
+  # no-match case needs the assignment rather than a substitution fallback.
+  local left; left=$(pgrep -c -x "$app" 2>/dev/null) || left=0
   [ "$left" -gt 0 ] && echo "WARNING: $left $app still running"
-  expect egl_churn "client churn must create and destroy EGLImages"
+  expect toplevel_churn 0 "a census taken with an app open must show more toplevels than the phase started with"
 }
 
 capture() {
@@ -131,7 +141,7 @@ capture() {
       && echo "shot $i/$ROUNDS ok" || echo "shot $i/$ROUNDS FAILED"
     sleep 3
   done
-  expect renderbuffer_churn "each screenshot must create and free renderbuffers"
+  expect renderbuffer_churn "$ROUNDS" "each screenshot must create and free at least one renderbuffer"
 }
 
 # The capture constraint queries fail only when an output has no current mode or an
@@ -161,8 +171,8 @@ faultcapture() {
       sleep 2
     done
   fi
-  expect fault_fired_workspace "the workspace capture path must take the injected failure"
-  expect fault_fired_toplevel "the toplevel capture path must take the injected failure"
+  expect fault_fired_workspace 0 "the workspace capture path must take the injected failure"
+  expect fault_fired_toplevel 0 "the toplevel capture path must take the injected failure"
 }
 
 popups() {
@@ -173,7 +183,7 @@ popups() {
     key $META $TAB;   sleep 1.0; key $ESC; sleep 0.6   # window switcher
     echo "round $i/$ROUNDS (4 popups)"
   done
-  expect egl_churn "popup churn must create and destroy EGLImages"
+  expect egl_churn "$((ROUNDS * 8))" "each of the 4 popups per round must import client buffers"
 }
 
 zoom() {
@@ -184,7 +194,7 @@ zoom() {
     key $META $MINUS; sleep 0.8
     echo "round $i/$ROUNDS (zoom in x2, out x2)"
   done
-  expect texture_churn "zoom must drive rendering"
+  expect zoom_changes "$((ROUNDS * 2))" "each round changes the zoom level 4 times"
 }
 
 workspaces() {
@@ -195,7 +205,7 @@ workspaces() {
     echo "round $i/$ROUNDS (4 switches + 2 output moves)"
   done
   key $META $K1
-  expect texture_churn "workspace switching must drive rendering"
+  expect workspace_switches "$((ROUNDS * 2))" "each round activates 4 workspaces"
 }
 
 # Relative motion avoids depending on how absolute uinput coordinates map onto a
@@ -210,7 +220,7 @@ pointer() {
     for _ in $(seq 1 8); do ydotool mousemove -x 0 -y -300 >/dev/null; sleep 0.05; done
     echo "sweep $i/$ROUNDS"
   done
-  expect texture_churn "pointer motion must drive rendering"
+  expect pointer_input "$((ROUNDS * 20))" "each sweep delivers 40 motion events"
 }
 
 # Minimize has no default binding, so bind it for the duration. cosmic-comp
@@ -240,7 +250,7 @@ minimize() {
   for _ in $(seq 1 20); do kill -0 "$pid" 2>/dev/null || break; sleep 0.5; done
   kill -0 "$pid" 2>/dev/null && kill -9 "$pid" 2>/dev/null
   sleep 5
-  expect minimize_tracked "minimize-held must show minimized_windows > 0, and it must return to 0"
+  expect minimize_tracked 1 "minimize-held must show minimized_windows > 0, and it must return to 0"
   echo "minimize phase complete (closed while minimized)"
 }
 

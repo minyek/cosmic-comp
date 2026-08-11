@@ -8,9 +8,78 @@ arrives; keep entries dated so the timeline stays legible.
 
 ## Current status
 
+**2026-08-11: a full desktop round ran and its invariants are clean, but the
+round is not scoreable — the activity check's *evidence counters* turned out to
+be unsound, not just the span they were measured over. Fixed by counting the
+workload itself; needs a re-drive on a build carrying the new counters.**
+
+The round drove all nine phases against installed md5 `aa870af2` (compositor
+started 13:47:41, binary installed 13:44:50, so the live process is the build
+under test). Every invariant held at all 14 censuses: cleanup queues drained,
+no `dead` cache entries, no capture sessions or offscreen renderbuffers
+outliving their client, `surface_threads == outputs == 2`, `live_slots` flat at
+4 with swapchain generations advancing, and no panic anywhere in the journal.
+Live GL objects returned to baseline (35 textures at start, 51 at settle, of
+which the difference is accounted for below).
+
+`verdict` failed `pointer` and `workspaces` for driving too few textures. That
+was not a dead phase — it was the check being wrong. Scoring each phase's
+declared evidence against the **idle rate measured in the run's own 90 s settle
+window** shows the counters cannot carry the claim:
+
+| phase | evidence | rate | idle rate | ratio |
+|---|---|---:|---:|---:|
+| capture | `renderbuffers_created` | 0.50/s | 0.02/s | 23× |
+| popups | `egl_images_created` | 11.10/s | 0.97/s | 11× |
+| zoom | `textures_created` | 43.21/s | 9.99/s | 4× |
+| apps | `egl_images_created` | 1.41/s | 0.97/s | 1.5× |
+| workspaces | `textures_created` | 5.33/s | 9.99/s | **0.5×** |
+| pointer | `textures_created` | 4.47/s | 9.99/s | **0.4×** |
+
+An idle desktop creates textures at ~10/s and EGL images at ~1/s, so a delta
+threshold over either measures how long a phase took, not what it did: a dead
+phase passes by lasting long enough, and `pointer` and `workspaces` — which
+legitimately render *less* than an idle desktop, because cursor motion goes to
+the cursor plane rather than through composition — fail while working perfectly.
+The single global `texture_churn` threshold of 500 could not be recalibrated per
+phase, because the phases' workloads differ by two orders of magnitude.
+
+Fixed by making each phase's evidence a counter only that phase's workload can
+move. `src/utils/workload_counters.rs` counts `pointer_motions`,
+`workspace_activations` and `zoom_changes` at the point the input is processed;
+`apps` now censuses *while a window is open* and requires `toplevels` above its
+own phase baseline; each phase declares its own minimum in `expectations.csv`,
+derived from its round count at roughly half the expected value so the check
+fails a dead phase rather than a slow one. `zoom` is counted rather than read
+from `output_zoom_states`, which saturates — smithay's `UserDataMap` has no
+removal API, so that flag is stuck true once zoom has been used at all. A
+capture whose build predates a counter now fails with "absent from the census"
+instead of passing on a counter that was never emitted. Verified against
+synthetic captures: each phase killed in isolation fails its own check and only
+its own.
+
+*Blast radius.* The **invariants** half of every previous verdict is unaffected
+— evaluated per census, independent of phases. The **activity** half is weaker
+than the 2026-08-09 entry below claims: that entry says re-running would settle
+zoom, workspaces and pointer, and it would not have. `apps` joins the
+un-evidenced set (1.5× idle is not evidence), and `zoom`'s 4× is suggestive but
+was never a designed margin. `capture` (23×) and `popups` (11×) stand, as do the
+hand-quoted per-phase deltas in the 2026-08-06 entry. No fix verdict rests on
+the un-evidenced phases, and no leak conclusion changes; what changes is that
+the harness could not have caught a dead phase in four of nine cases, so the
+"no leak found" result covers less than it appeared to. Settling it needs the
+re-drive on the new build — the round above cannot be rescored, because the
+counters that would evidence it did not exist when it ran.
+
+*Also observed:* `iced_elements` rises 4 → 6 during the zoom phase and stays
+there through settle. That is the zoom OSD element inside `OutputZoomState`, one
+per output, retained because the state itself is never removed. It is bounded —
+six zoom rounds produced exactly two, and live textures stayed flat at 53 across
+them — so it is retention, not a leak, but it is why the post-zoom baseline sits
+above the pre-zoom one.
+
 **2026-08-09: the capture-panic fix is now coverable, and the verdict tool's
-per-phase activity check was found broken and fixed. No new desktop round has
-been run yet — the entry below is still the latest result.**
+per-phase activity check was found broken and fixed.**
 
 The 2026-08-06 entry closed the build-delta caveat but left one gap open: the
 capture-panic fix `5bbb12e8` (carried here as `1148a2c7`) was called
@@ -45,9 +114,10 @@ renderbuffers) and popup churn (+1,230 EGLImages) were each read off the counter
 tables and stand. **Zoom, workspace switching and pointer motion were not
 independently evidenced**: all three declare `texture_churn`, and any one of them
 could have satisfied the check for the other two. Their "all counters flat"
-result is therefore un-evidenced, not wrong — re-running now scores each phase
-inside its own `post-<phase>` span and will settle it. No fix verdict changes:
-nothing in that entry rests on those three phases.
+result is therefore un-evidenced, not wrong. No fix verdict changes: nothing in
+that entry rests on those three phases. (Scoring inside each phase's own span
+was necessary but not sufficient — see the 2026-08-11 entry, which found the
+counters those spans were measuring to be unsound too.)
 
 The process doc also claimed the dead-run detection was "regression-tested
 against the journals from that dead run". There is no such test in the repo; the

@@ -130,12 +130,31 @@ renderbuffer churn it exists to prove.
 sessions or offscreen renderbuffers outliving their client, `surface_threads ==
 outputs`, `live_slots` bounded relative to output count.
 
-**Activity** — every phase must show GL objects genuinely created *and* destroyed.
+**Activity** — every phase must show that its own workload reached the compositor.
 This half exists because the pass condition for a leak test is "counters stayed
 flat", which is indistinguishable from "the workload never ran". On 2026-08-06 an
 entire suite of popup, zoom and workspace phases reported success having done
 nothing at all, and it was caught only by noticing `egl_images_created` frozen
 across 32 supposed popup opens. `census.py verdict` now fails that case outright.
+
+The evidence has to be a counter *only that phase's workload can move*, which
+rules out generic GL churn for most phases. An idle desktop creates textures at
+~10/s and EGL images at ~1/s, so a delta threshold over either scores how long a
+phase took rather than what it did: measured against the 90 s settle window, the
+`pointer` and `workspaces` phases moved *fewer* textures per second than an idle
+desktop, and `apps` was within 1.5× of idle. So the phases that drive input are
+evidenced by counters incremented on the input itself
+(`src/utils/workload_counters.rs`: `pointer_motions`, `workspace_activations`,
+`zoom_changes`), and the rest by state only the phase can enter — a capture
+session, a minimized window, a renderbuffer, a toplevel above the phase's own
+baseline. Where that state is transient the phase censuses *while holding it*
+(`apps-window`, `minimize-held`, `overview-OPEN`); a boundary census alone would
+see it already gone.
+
+Each phase declares its own minimum in `expectations.csv`, derived from its round
+count, because one global constant cannot fit workloads that differ by two orders
+of magnitude. A capture whose build predates a counter fails with "absent from the
+census" rather than passing on a counter that was never emitted.
 
 **Journal evidence** — a compositor panic anywhere in the captured journal fails
 the run, and the fault round additionally requires both injected-fault messages.

@@ -333,6 +333,7 @@ impl State {
             InputEvent::PointerMotion { event, .. } => {
                 use smithay::backend::input::PointerMotionEvent as _;
 
+                crate::utils::workload_counters::record_pointer_motion();
                 let shell = self.common.shell.write();
                 if let Some(seat) = shell
                     .seats
@@ -705,6 +706,7 @@ impl State {
                 }
             }
             InputEvent::PointerMotionAbsolute { event, .. } => {
+                crate::utils::workload_counters::record_pointer_motion();
                 let maybe_seat = self
                     .common
                     .shell

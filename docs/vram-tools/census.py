@@ -47,15 +47,31 @@ SETTLED = {
     "pending_frames": "capture frames queued but never completed",
 }
 
-ACTIVITY = {                     # phase expectation -> (counter, minimum delta in-phase)
-    "egl_churn": ("raw.egl_images_created", 20),
-    "texture_churn": ("raw.textures_created", 500),
-    "renderbuffer_churn": ("raw.renderbuffers_created", 2),
+# Evidence must be a counter only the phase's own workload can move. Generic GL churn
+# mostly is not: an idle desktop creates textures at ~10/s and EGL images at ~1/s, so a
+# delta threshold over either scores how long the phase took rather than what it did, and
+# a dead phase passes by lasting long enough. Counters that survive that test are the ones
+# driven by an input event (workload.*), by a state only the phase can enter (zoom,
+# minimize, capture sessions), or by an allocation with no idle source (renderbuffers).
+# Each phase declares its own minimum in expectations.csv, derived from its round count —
+# one global constant cannot fit workloads that differ by two orders of magnitude.
+ACTIVITY = {                     # phase expectation -> counter that must advance in-phase
+    "egl_churn": "raw.egl_images_created",
+    "renderbuffer_churn": "raw.renderbuffers_created",
+    "pointer_input": "workload.pointer_motions",
+    "workspace_switches": "workload.workspace_activations",
+    "zoom_changes": "workload.zoom_changes",
 }
 
-PEAKS = {                        # phase expectation -> (counter, minimum peak in-phase)
-    "ws_sessions_peak": ("ws_sessions", 1),
-    "minimize_tracked": ("minimized_windows", 1),
+PEAKS = {                        # phase expectation -> counter that must peak in-phase
+    "ws_sessions_peak": "ws_sessions",
+    "minimize_tracked": "minimized_windows",
+}
+
+# Peaks whose baseline is not zero: the desktop already has toplevels, so only a rise
+# above what the phase started with evidences the phase opened one.
+PEAKS_ABOVE_BASELINE = {         # phase expectation -> counter that must exceed its baseline
+    "toplevel_churn": "toplevels",
 }
 
 # Evidence that only exists as journal text: an injected fault leaves no counter behind,
@@ -96,6 +112,10 @@ def parse_block(lines):
             scope = re.search(r'output "([^"]+)"', line).group(1)
             for key, val in FIELD_RE.findall(line):
                 counters[f"{scope}.{key}"] = int(val)
+            continue
+        if "workload counters:" in line:
+            for key, val in FIELD_RE.findall(line.split("workload counters:")[1]):
+                counters[f"workload.{key}"] = int(val)
             continue
         if line.startswith(("GL live objects", "GL cleanup queue depth")):
             prefix = "live" if "live objects" in line else "queue"
@@ -237,17 +257,30 @@ def cmd_verdict(directory):
     if expectations.exists():
         wanted = {}
         for row in expectations.read_text().splitlines():
-            phase, kind, _ = (row.split(",", 2) + ["", ""])[:3]
-            wanted.setdefault(phase, set()).add(kind)
+            phase, kind, minimum, _ = (row.split(",", 3) + ["", "", "", ""])[:4]
+            if not phase:
+                continue
+            if not (minimum or "0").isdigit():
+                print(f"{expectations} predates the per-phase minimums and its captures predate "
+                      "the workload counters; this run cannot be scored, re-drive it",
+                      file=sys.stderr)
+                return 1
+            wanted.setdefault(phase, {})[kind] = int(minimum or 0)
         spans = phase_spans(rows)
         for phase, kinds in sorted(wanted.items()):
             base, span = spans.get(phase, (rows[0], rows))
             if phase not in spans:
                 notes.append(f"{phase}: no post-{phase} census — scored against the whole run")
-            for kind in sorted(kinds):
+            for kind, minimum in sorted(kinds.items()):
                 if kind in ACTIVITY:
-                    counter, minimum = ACTIVITY[kind]
+                    counter = ACTIVITY[kind]
                     if len(span) < 2:
+                        continue
+                    if counter not in span[-1][3]:
+                        failures.append(
+                            f"[{phase}] {counter} absent from the census — the build under "
+                            "test predates this counter, so the phase cannot be evidenced"
+                        )
                         continue
                     delta = span[-1][3].get(counter, 0) - base[3].get(counter, 0)
                     if delta < minimum:
@@ -256,12 +289,22 @@ def cmd_verdict(directory):
                             "the workload never reached the compositor"
                         )
                 elif kind in PEAKS:
-                    counter, minimum = PEAKS[kind]
+                    counter = PEAKS[kind]
                     peak = max((r[3].get(counter, 0) for r in span), default=0)
                     if peak < minimum:
                         failures.append(
                             f"[{phase}] {counter} peaked at {peak} (< {minimum}) — "
                             "the workload never reached the compositor"
+                        )
+                elif kind in PEAKS_ABOVE_BASELINE:
+                    counter = PEAKS_ABOVE_BASELINE[kind]
+                    start = base[3].get(counter, 0)
+                    peak = max((r[3].get(counter, 0) for r in span), default=0)
+                    if peak <= start:
+                        failures.append(
+                            f"[{phase}] {counter} never rose above its baseline of {start} — "
+                            "the workload never reached the compositor "
+                            "(needs a census taken while the phase holds one open)"
                         )
                 elif kind in JOURNAL_EVIDENCE:
                     pattern, meaning = JOURNAL_EVIDENCE[kind]

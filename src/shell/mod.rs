@@ -1767,6 +1767,7 @@ impl Shell {
                         set.workspaces[set.active].tiling_layer.cleanup_drag();
                     }
                     set.activate(idx, workspace_delta, workspace_state)?;
+                    crate::utils::workload_counters::record_workspace_activation();
 
                     let output_geo = output.geometry();
                     Ok(
@@ -1781,6 +1782,7 @@ impl Shell {
                 for set in self.workspaces.sets.values_mut() {
                     set.activate(idx, workspace_delta, workspace_state)?;
                 }
+                crate::utils::workload_counters::record_workspace_activation();
                 let output_geo = output.geometry();
                 Ok(output_geo.loc + Point::from((output_geo.size.w / 2, output_geo.size.h / 2)))
             }

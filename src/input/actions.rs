@@ -1117,6 +1117,7 @@ impl State {
         if current_level == 1. && change <= 0. {
             return;
         }
+        crate::utils::workload_counters::record_zoom_change();
 
         if zoom_seat == *seat {
             let factor = 1.0 + change.abs();
