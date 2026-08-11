@@ -8,10 +8,42 @@ arrives; keep entries dated so the timeline stays legible.
 
 ## Current status
 
+**2026-08-11 (fault round, md5 `e54aa008`): PASS — the capture failure paths are
+now covered, and the workspace-capture panic fix `1148a2c7` is verified by
+execution rather than by inspection.**
+
+`COSMIC_FAULT_CAPTURE_CONSTRAINTS=1` reached the compositor (`Fault armed:
+COSMIC_FAULT_CAPTURE_CONSTRAINTS` at startup) and both branches took the
+injected failure: **56** `Failing screencopy constraints for workspace` and
+**58** for toplevel across six overview cycles and three screenshots. No panic
+anywhere in the journal, invariants clean, and every capture session torn down
+by the settle census. This is the round the 2026-08-09 entry called for — the
+removal-and-stop code behind the constraints failures had never executed under
+test before, and it now has, ~114 times.
+
+*Verdict-tool defect found by this round, fixed.* It first reported
+`queue.framebuffer=1 — renderer cleanup queue not drained` at the baseline
+census, which was a sampling artifact, not a leak: that census recorded
+`queued_framebuffer=91305` against `drained_framebuffer=91304`, and the next
+census showed both at `92627`. A cleanup queue depth is an in-flight count, the
+compositor renders continuously, and the census arrives asynchronously on
+SIGUSR1 — with framebuffers churning in the hundreds per second, catching one
+mid-drain is luck. Requiring zero at every instant had been passing by luck up
+to this point. The queues are now judged by whether they *drain*: occupied at
+the settled final census, or across two consecutive censuses, still fails, and
+both shapes are regression-tested against synthetic captures.
+
+*Second defect, same round.* Re-scoring an archived round returned PASS with
+"every phase evidenced real activity" while checking nothing at all — its
+`expectations.csv` had been archived empty and its labels lost, because
+`session.sh` archived the journals but not `marks.csv`. An empty expectation set
+is now a failure in itself, since a verdict that checks no phase is the silent
+no-op this half of the verdict exists to prevent, and the archive keeps a copy
+of `marks.csv`.
+
 **2026-08-11 (second round, md5 `e54aa008`): PASS — invariants hold and, for the
 first time, every phase is evidenced by a counter its own workload moves. No
-leak found. The capture *failure* paths remain untested; the fault round is
-still outstanding.**
+leak found.**
 
 Fifteen censuses, two outputs. Every invariant held at every one: cleanup queues
 drained, no `dead` cache entries, no capture sessions or offscreen renderbuffers
