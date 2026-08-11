@@ -46,17 +46,30 @@ involved.
 ## Verification
 
 Compile-verified as above. Runtime-verified on the instrumented census build
-(`all-fixes-instrumented-invalidate` branches) by a scripted full-desktop pass:
-27 censuses over 2.5 hours on a dual-output NVIDIA system, each workflow driven
-in isolation. Main-thread import caches and destruction queues stayed bounded
-across client exits, captures and reconfigures — the cleanup queue was empty in
-every census, no cache retained a dead entry, three output power-cycles
-regenerated ~338 swapchain slot generations against 5 live slots, and 10 client
-open/close cycles created and destroyed 99 EGLImages while leaving every cache
-value unchanged.
+(`all-fixes-instrumented-invalidate`) by a scripted full-desktop pass on a
+dual-output NVIDIA system: 15 censuses, nine workflows each driven and censused
+in isolation, scored by an automated verdict.
 
-The reconfigure figures carry one caveat: the instrumented build also holds a
-connector-removal `drop_and_join()` that is not on the clean branch (it sits
-inside `95411f26`, a "do not merge" commit). Monitor power-cycles take that
-path, so either hoist the fix onto the shipped branch or re-measure before
-relying on those numbers.
+Across client exits, captures and reconfigures, with no polling anywhere:
+
+- The main-thread cleanup queues drained in every census, and no renderer cache
+  retained a dead entry.
+- `live_slots` held at 4 (two per output) through three reconfigurations while
+  swapchain generations advanced — recycling, not accumulation.
+- One surface thread per connected output throughout.
+- 10 client open/close cycles created and destroyed 86 EGLImages; six screenshots
+  created and freed 12 renderbuffers. Both balanced to zero, which is mechanism 3
+  doing its job: the destruction-scheduled drain releases a dead client's imports
+  within one refresh, with no mode change involved.
+
+Each phase is separately evidenced by a counter only its own workload moves, so a
+phase that drove nothing fails the run instead of passing on flat counters.
+
+Two scope notes. The pass reconfigures through `cosmic-randr`
+(`apply_config_for_outputs`), which is on this branch — the connector-removal
+`drop_and_join()` that exists only in the instrumented build is reached by a
+*physical* power-cycle, which this pass does not perform, so these numbers are
+free of it; physical hotplug remains unmeasured on the shipped branch. And live
+EGLImages end a session ~10 above its opening baseline, arising during popup churn
+and then flat across the remaining workflows — unexplained, but not on the paths
+this change touches.

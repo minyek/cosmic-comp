@@ -43,12 +43,40 @@ imports). These commits fix the secondary, compositor-owned leaks.
   promptly instead of pinning VRAM until the next mode change.
 - **Disconnected clients** — removed from all DRM devices (multi-GPU), not just
   one.
+- **Panics on capture failure paths** — the workspace constraints-failure path
+  removed the session from the `Output`, but workspace-scope sessions live in
+  `Workspace::image_copy`: an unwrap panic on an output that never hosted an
+  output-scope capture, and a silently leaked session on one that had. Removal is
+  now idempotent, and `constraints_for_*` fail the capture instead of unwrapping a
+  missing offscreen renderer.
 
 ## Testing
 
-Validated with a SIGUSR1 resource census over multi-hour dual-output NVIDIA
-sessions: every targeted container stayed zero/bounded under load — capture and
-cursor sessions, offscreen renderbuffers, pending activations/frames, zoom states,
-and minimized windows all `0`; the main-thread cleanup queue drained fully (24k+
-textures cycled through it and freed, 400+ PBO readbacks all freed). Compiles
-against the pinned smithay (rev `85f83ab`).
+Machine-checked regression pass on an installed dual-output NVIDIA session: nine
+workflows — output reconfiguration, client churn, capture, popups, zoom, workspace
+switching, pointer motion, minimize — each censused at its own boundaries and
+scored per phase.
+
+**Result: pass.** In every census the cleanup queues drained, no renderer cache
+retained a dead entry, no capture session or offscreen renderbuffer outlived its
+client, `surface_threads == outputs`, and `live_slots` held at 4 across three
+reconfigurations while swapchain generations advanced — recycling, not
+accumulation. Per phase: 10 client open/close cycles created and destroyed 86
+EGLImages, six screenshots created and freed 12 renderbuffers, both balanced to
+zero.
+
+Each phase is evidenced by a counter only its own workload can move — input
+events, capture sessions, minimized windows, toplevels above the phase's own
+baseline — so "counters stayed flat" cannot be mistaken for "the workload never
+ran". A generic GL-churn threshold cannot make that distinction, because an idle
+desktop creates textures fast enough to satisfy one.
+
+The capture *failure* paths are unreachable from any desktop workload, since every
+output carries a mode before a client can bind a capture source, so they are
+covered by fault injection: 56 workspace-scope and 58 toplevel-scope constraints
+failures, no panic, every session torn down and its client notified.
+
+One residual, not a regression in this set: live EGLImages end a session ~10 above
+its opening baseline, arising in the popup phase (582 created against 569
+destroyed) and then holding flat across the remaining workflows rather than
+growing. Unexplained, and tracked separately from these fixes.

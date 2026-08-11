@@ -49,9 +49,18 @@ Fifteen censuses, two outputs. Every invariant held at every one: cleanup queues
 drained, no `dead` cache entries, no capture sessions or offscreen renderbuffers
 outliving their client, `surface_threads == outputs == 2`, `live_slots` flat at 4
 with swapchain generations advancing, and no panic in the journal. Live GL
-objects went 32 → 42 textures and 20 → 31 EGL images across the whole round, the
-difference tracking the two retained zoom OSD elements and the desktop's own
-state rather than growth under churn.
+objects went 32 → 42 textures and 20 → 31 EGL images across the whole round.
+
+*That residual is not the zoom OSD, as first recorded here.* It is already
++13/+13 at `post-popups`, with `iced_elements` still at its baseline 3, and it
+matches that phase's imbalance exactly: 582 EGLImages created against 569
+destroyed. Live EGL images then sit at 33 → 33 → 29 → 31 across zoom, workspaces,
+minimize and settle — a plateau, not accumulation, so it is not the unbounded
+growth this hunt targets, and every invariant the verdict checks (queues, dead
+cache entries, sessions, renderbuffers, slots, threads) is clean throughout.
+But it is unexplained, and popup churn leaving ~13 EGLImages live is worth a
+dedicated round: drive `popups` alone, repeatedly, and see whether the plateau
+is per-session state or rises with each pass.
 
 What each phase actually evidenced, against the minimum it declared:
 
