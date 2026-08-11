@@ -14,3 +14,6 @@ vendor.tar
 .vscode
 *.log
 /result
+
+# Python bytecode from the vram-tools scripts
+__pycache__/
