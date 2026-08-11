@@ -297,7 +297,15 @@ faultall() {
 }
 
 case "$PHASE" in
-  selftest|monitors|apps|capture|popups|zoom|workspaces|pointer|minimize|faultcapture) "$PHASE" ;;
+  # A phase run alone gets the same boundary censuses `all` gives it, so its own
+  # counters are attributable to it rather than to whatever the desktop did since
+  # the last census — without them a standalone phase cannot be scored at all.
+  selftest|monitors|apps|capture|popups|zoom|workspaces|pointer|minimize|faultcapture)
+    : > "$CTL/expectations.csv"
+    mark baseline
+    run_phase "$PHASE" "$ROUNDS"
+    echo "phase complete — run: python3 census.py verdict $CTL"
+    ;;
   all) all ;;
   faultall) faultall ;;
   *) echo "usage: $0 {all|faultall|selftest|monitors|apps|capture|popups|zoom|workspaces|pointer|minimize|faultcapture} [rounds]"; exit 2 ;;

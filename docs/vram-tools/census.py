@@ -229,6 +229,16 @@ def cmd_verdict(directory):
         print(f"no censuses found in {directory}")
         return 1
 
+    # Both drivers open a round with a `baseline` mark, and a later round appends to
+    # the same directory rather than replacing it — its sequence numbers simply carry
+    # on. Scoring from the last baseline keeps a re-driven phase from being measured
+    # across everything the desktop did since the previous round ended.
+    starts = [i for i, r in enumerate(rows) if r[1] == "baseline"]
+    if starts and starts[-1]:
+        print(f"note: scoring the round that starts at census {rows[starts[-1]][0]}; "
+              f"{starts[-1]} earlier censuses belong to a previous round")
+        rows = rows[starts[-1]:]
+
     failures, notes = [], []
     outputs = rows[-1][3].get("outputs", 0)
 
