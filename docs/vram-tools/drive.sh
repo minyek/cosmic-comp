@@ -23,8 +23,18 @@ ROUNDS=${2:-8}
 command -v ydotool >/dev/null || { echo "ydotool not installed"; exit 1; }
 # The socket file outlives the daemon, so check the process too — a stale socket
 # means every keystroke is silently discarded and the phases test nothing.
-pgrep -x ydotoold >/dev/null || { echo "ydotoold is not running (socket may be stale)"; exit 1; }
-[ -S "$YDOTOOL_SOCKET" ] || { echo "ydotoold socket $YDOTOOL_SOCKET missing"; exit 1; }
+if ! pgrep -x ydotoold >/dev/null || [ ! -S "$YDOTOOL_SOCKET" ]; then
+  if pgrep -x ydotoold >/dev/null; then
+    echo "ydotoold running but socket $YDOTOOL_SOCKET missing"
+  elif [ -S "$YDOTOOL_SOCKET" ]; then
+    echo "stale socket $YDOTOOL_SOCKET, no ydotoold process"
+  else
+    echo "no ydotoold at $YDOTOOL_SOCKET"
+  fi
+  echo "  sudo rm -f $YDOTOOL_SOCKET"
+  echo "  sudo systemd-run --unit=ydotoold-test ydotoold --socket-path=$YDOTOOL_SOCKET --socket-own=$(id -u):$(id -g)"
+  exit 1
+fi
 [ -d "$CTL" ] || { echo "$CTL missing — is session.sh running?"; exit 1; }
 
 # Linux input-event-codes, which is what ydotool speaks.
