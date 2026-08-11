@@ -41,6 +41,16 @@ per-surface in surface user-data (`RendererSurfaceState`, the multigpu
 per-surface texture cache) hold their own references and are released on
 surface destruction or buffer replacement, not by this call.
 
+Finally, `GpuManager::cleanup_texture_cache` and `GpuManager::invalidate_caches`,
+which apply the corresponding `Renderer` method to every enumerated device.
+Outside a draw a compositor holds a `GpuManager`, not a `MultiRenderer`, so
+without these it must hand-roll a loop over `devices_mut` — and such a loop
+cannot reach the buffers cached for copying between a render and a target node,
+which belong to the manager, are keyed by node pair, and are reachable only
+through a `MultiRenderer` built for that pair. `invalidate_caches` clears those
+copy buffers too: one full output-sized dmabuf per node pair, which no renderer
+owns. This is the entry point the consumer below actually calls.
+
 ## Consumer / motivation
 
 Written to support a cosmic-comp fix (event-driven main-thread renderer-cache
@@ -62,38 +72,39 @@ The GL backends need a real context and remain untested, like
 `cleanup_texture_cache` itself.
 
 Runtime-verified indirectly via the consuming cosmic-comp fix, which calls
-`invalidate_caches()` on its main-thread renderer. The most recent pass was a
-scripted full-desktop run on a dual-output NVIDIA system — 27 GPU-resource
-censuses over 2.5 hours, each workflow driven in isolation so the deltas are
-attributable:
+`GpuManager::invalidate_caches()` after each infrequent main-thread render. The
+most recent pass was a scripted full-desktop run on a dual-output NVIDIA system —
+15 GPU-resource censuses, nine workflows each driven and censused in isolation so
+the deltas are attributable, scored by an automated verdict:
 
-- **Output reconfiguration**, the case this method exists for: three
-  power-cycles regenerated the 4K swapchain through ~338 slot generations while
-  live slots stayed pinned at 5. Every superseded generation's imports were
-  released rather than accumulating, which is what invalidating right after an
-  infrequent render is supposed to achieve.
+- **Output reconfiguration**, the case this method exists for: three cycles of
+  one output advanced its swapchain from generation 4 to 112 while `live_slots`
+  stayed pinned at 4 (two per output) and the untouched output stayed at
+  generation 3. Every superseded generation's imports were released rather than
+  accumulating, which is what invalidating right after an infrequent render is
+  supposed to achieve.
 - **Screencopy**: 12 renderbuffers created and 12 freed across 6 captures, with
   no capture session, offscreen renderbuffer or pending frame outliving its
   client.
-- **Client churn**: 99 EGLImages and 9,379 textures created *and* destroyed
-  across 10 client open/close cycles, with every renderer cache value identical
-  before and after.
-- **Cache growth is bounded, not merely slow**: the retained dmabuf import
-  caches saturate — live textures 58, 66 and 70 after 1, 2 and 11
-  workspace-overview cycles, then flat through three further workflows and a
-  90 s idle.
+- **Client churn**: 86 EGLImages and 268 textures created *and* destroyed across
+  10 client open/close cycles, with every renderer cache value identical before
+  and after.
 
-The renderer's GL cleanup queue was empty in all 27 censuses, no cache held a
-dead entry, and no GL error was logged in any phase.
+The renderer's GL cleanup queues drained in all 15 censuses and no cache held a
+dead entry. Each workflow is separately evidenced by a counter only that workload
+can move, so a phase that drove nothing fails the run rather than passing on flat
+counters — a distinction generic GL churn cannot make, since an idle desktop
+creates textures fast enough to satisfy any such threshold.
 
 **Not covered:** the machine has a single GPU, so `MultiRenderer`'s
 cross-device invalidation was exercised only in its render/target form, not
 across separate render and target *devices*. The pixman unit tests remain the
 only direct coverage of the semantics.
 
-**Caveat on the reconfiguration figures:** those measurements come from an
-instrumented cosmic-comp build that also carries a consumer-side fix (a
-synchronous surface-thread join on connector removal) which is not yet on the
-cosmic-comp branch being submitted. It affects cosmic-comp's own teardown, not
-`invalidate_caches` semantics, but it means the reconfigure numbers describe a
-slightly better-behaved consumer than the one currently in review.
+**On the reconfiguration figures:** an earlier revision of this description
+warned they might flatter the consumer, because the instrumented build also
+carries a synchronous surface-thread join on connector removal. That does not
+apply — the pass reconfigures through `cosmic-randr`, which takes cosmic-comp's
+`apply_config_for_outputs` path, whereas the join is on the connector-*removal*
+path a physical unplug takes. The figures are free of it. Physical hotplug
+correspondingly remains unmeasured here.
