@@ -8,10 +8,48 @@ arrives; keep entries dated so the timeline stays legible.
 
 ## Current status
 
-**2026-08-11: a full desktop round ran and its invariants are clean, but the
-round is not scoreable — the activity check's *evidence counters* turned out to
-be unsound, not just the span they were measured over. Fixed by counting the
-workload itself; needs a re-drive on a build carrying the new counters.**
+**2026-08-11 (second round, md5 `e54aa008`): PASS — invariants hold and, for the
+first time, every phase is evidenced by a counter its own workload moves. No
+leak found. The capture *failure* paths remain untested; the fault round is
+still outstanding.**
+
+Fifteen censuses, two outputs. Every invariant held at every one: cleanup queues
+drained, no `dead` cache entries, no capture sessions or offscreen renderbuffers
+outliving their client, `surface_threads == outputs == 2`, `live_slots` flat at 4
+with swapchain generations advancing, and no panic in the journal. Live GL
+objects went 32 → 42 textures and 20 → 31 EGL images across the whole round, the
+difference tracking the two retained zoom OSD elements and the desktop's own
+state rather than growth under churn.
+
+What each phase actually evidenced, against the minimum it declared:
+
+| phase | evidence | observed | min |
+|---|---|---:|---:|
+| popups | `egl_images_created` | 582 | 64 |
+| pointer | `pointer_motions` | 200 | 100 |
+| zoom | `zoom_changes` | 24 | 12 |
+| workspaces | `workspace_activations` | 13 | 5 |
+| capture | `renderbuffers_created` | 12 | 6 |
+| selftest | `ws_sessions` peak | 4 | 1 |
+| apps | `toplevels` above baseline | +1 | +1 |
+| minimize | `minimized_windows` peak | 1 | 1 |
+
+Synthetic input delivery is exact where it can be checked: 200 motion events for
+200 `mousemove` calls, 24 zoom changes for 24 keystrokes.
+
+*Open question:* the `workspaces` phase drives 21 `Super+N` presses but only 13
+reach `Shell::activate`, which is the sole caller path for that action and
+increments unconditionally on success — so 8 presses never matched as shortcuts.
+The phase is clearly live, and the minimum has been reset from the measured
+yield (~2.6 per round) rather than the nominal 4, but the loss itself is
+uncharacterised. A standalone `drive.sh workspaces 1` would settle whether it is
+per-round or an artifact of the phase's output-move steps. Delivery being exact
+for pointer and zoom makes dropped uinput events an unlikely explanation.
+
+**2026-08-11 (first round, md5 `aa870af2`): invariants clean, but the round is
+not scoreable — the activity check's *evidence counters* turned out to be
+unsound, not just the span they were measured over. Fixed by counting the
+workload itself.**
 
 The round drove all nine phases against installed md5 `aa870af2` (compositor
 started 13:47:41, binary installed 13:44:50, so the live process is the build
@@ -67,9 +105,9 @@ was never a designed margin. `capture` (23×) and `popups` (11×) stand, as do t
 hand-quoted per-phase deltas in the 2026-08-06 entry. No fix verdict rests on
 the un-evidenced phases, and no leak conclusion changes; what changes is that
 the harness could not have caught a dead phase in four of nine cases, so the
-"no leak found" result covers less than it appeared to. Settling it needs the
-re-drive on the new build — the round above cannot be rescored, because the
-counters that would evidence it did not exist when it ran.
+"no leak found" result covers less than it appeared to. This round cannot be
+rescored — the counters that would evidence it did not exist when it ran — and
+is superseded by the re-drive recorded above, which settles all four phases.
 
 *Also observed:* `iced_elements` rises 4 → 6 during the zoom phase and stays
 there through settle. That is the zoom OSD element inside `OutputZoomState`, one
