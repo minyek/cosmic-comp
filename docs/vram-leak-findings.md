@@ -37,14 +37,28 @@ What each phase actually evidenced, against the minimum it declared:
 Synthetic input delivery is exact where it can be checked: 200 motion events for
 200 `mousemove` calls, 24 zoom changes for 24 keystrokes.
 
-*Open question:* the `workspaces` phase drives 21 `Super+N` presses but only 13
-reach `Shell::activate`, which is the sole caller path for that action and
-increments unconditionally on success — so 8 presses never matched as shortcuts.
-The phase is clearly live, and the minimum has been reset from the measured
-yield (~2.6 per round) rather than the nominal 4, but the loss itself is
-uncharacterised. A standalone `drive.sh workspaces 1` would settle whether it is
-per-round or an artifact of the phase's output-move steps. Delivery being exact
-for pointer and zoom makes dropped uinput events an unlikely explanation.
+*Open lead — `Super+N` presses are silently dropped, and this one is probably a
+compositor bug rather than a harness artifact.* The `workspaces` phase drives 21
+presses across the full round and only 13 reach `Shell::activate`; a single
+round measured in isolation, with the desktop quiet (13 pointer events over the
+whole phase), yields 3 activations for 4 presses. `Shell::activate` is the sole
+caller path for `Action::Workspace` and increments unconditionally on success, so
+the missing presses never matched as shortcuts at all.
+
+The yield is *variable* — 2.6 per round across the full run, 3.0 in isolation —
+which rules out the obvious explanations: a key left unbound would lose the same
+one every round, and zoom-phase state cannot be it because the isolated round ran
+with no zoom before it. Dropped uinput events are ruled out too, since the `zoom`
+phase delivers 24 changes for 24 keystrokes through the identical `key` helper at
+the same cadence, and `pointer` delivers 200 for 200. What remains is a timing- or
+state-dependent loss upstream of `Shell::activate`, in shortcut matching itself.
+A workspace shortcut that intermittently does nothing under repeated presses is
+user-visible and unrelated to VRAM, so it is recorded here as a lead rather than
+chased: isolating it needs a log line per matched `Action::Workspace`, which costs
+a rebuild, reinstall and logout to answer a question no leak verdict rests on.
+
+The `workspaces` minimum is set from the measured yield rather than the nominal
+4, leaving the check a 3× margin.
 
 **2026-08-11 (first round, md5 `aa870af2`): invariants clean, but the round is
 not scoreable — the activity check's *evidence counters* turned out to be
