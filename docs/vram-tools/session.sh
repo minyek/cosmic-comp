@@ -43,6 +43,10 @@ if compgen -G "$CTL/journal-*.txt" >/dev/null || [ -e "$CTL/expectations.csv" ];
   PREVIOUS=$CTL/previous-$(date +%H%M%S)
   mkdir -p "$PREVIOUS"
   mv "$CTL"/journal-*.txt "$CTL"/snapshot-* "$CTL"/expectations.csv "$PREVIOUS"/ 2>/dev/null
+  # marks.csv carries every census label and is truncated in place below, so the
+  # archive needs a copy: without it the round reads back as bare filenames, its
+  # phase boundaries disappear, and it re-scores as though nothing was checked.
+  cp "$MARKS" "$PREVIOUS"/ 2>/dev/null
   chmod -R a+rX "$PREVIOUS"
   echo "archived the previous round to $PREVIOUS"
 fi

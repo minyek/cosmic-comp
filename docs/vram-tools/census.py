@@ -25,6 +25,19 @@ COMP_RE = re.compile(r"compositor\[([^\]]+)\]")
 
 # Counters that must be zero in every census, with what a non-zero value means.
 INVARIANTS = {
+    "dead": "dead entries retained in a renderer cache",
+    "live.renderbuffers": "offscreen renderbuffers outliving their capture session",
+    "offscreen_renderbuffers": "offscreen renderbuffers outliving their capture session",
+}
+
+# Cleanup queue depths are `queued - drained`: an in-flight count, not steady state.
+# The compositor renders continuously and the census arrives asynchronously on SIGUSR1,
+# so a queue caught mid-drain holds an item through no fault of anyone's — framebuffers
+# alone churn in the hundreds per second. Requiring zero at every instant therefore
+# fails on sampling luck. What a leak actually looks like is a queue that does not
+# drain: still occupied once the desktop has settled, or occupied across two censuses
+# in a row.
+QUEUES = {
     "queue.texture": "renderer cleanup queue not drained",
     "queue.framebuffer": "renderer cleanup queue not drained",
     "queue.renderbuffer": "renderer cleanup queue not drained",
@@ -32,9 +45,6 @@ INVARIANTS = {
     "queue.mapping": "renderer cleanup queue not drained",
     "queue.program": "renderer cleanup queue not drained",
     "queue.sync": "renderer cleanup queue not drained",
-    "dead": "dead entries retained in a renderer cache",
-    "live.renderbuffers": "offscreen renderbuffers outliving their capture session",
-    "offscreen_renderbuffers": "offscreen renderbuffers outliving their capture session",
 }
 
 # Counters that must be zero once a phase has finished, but legitimately rise
@@ -255,6 +265,23 @@ def cmd_verdict(directory):
                 if c.get(key, 0) != 0:
                     failures.append(f"[{seq} {label}] {key}={c[key]} — {meaning}")
 
+    for key, meaning in QUEUES.items():
+        depths = [(r[0], r[1], r[3].get(key, 0)) for r in rows]
+        final_seq, final_label, final_depth = depths[-1]
+        if final_depth:
+            failures.append(f"[{final_seq} {final_label}] {key}={final_depth} — {meaning} "
+                            "(still queued at the final census, with the desktop settled)")
+        for (seq_a, label_a, depth_a), (seq_b, label_b, depth_b) in zip(depths, depths[1:]):
+            if depth_a and depth_b:
+                failures.append(f"[{seq_a} {label_a} -> {seq_b} {label_b}] {key} held "
+                                f"{depth_a} then {depth_b} across consecutive censuses — {meaning}")
+                break
+        transient = [(label, depth) for _, label, depth in depths[:-1] if depth]
+        if transient and not final_depth:
+            notes.append(f"{key} was briefly occupied mid-run ("
+                         + ", ".join(f"{label}={depth}" for label, depth in transient)
+                         + ") and drained by the final census")
+
     # Activity: a phase whose workload never reached the compositor is a failure,
     # not a pass, however flat its counters are.
     text = journal_text(directory)
@@ -264,6 +291,11 @@ def cmd_verdict(directory):
         failures.append(f"compositor panic in the journal: {line}")
 
     expectations = Path(directory) / "expectations.csv"
+    # No expectations means no phase was checked at all. Reporting that as a pass is the
+    # failure this half of the verdict exists to prevent, so it is a failure itself.
+    if not expectations.exists() or not expectations.read_text().strip():
+        failures.append(f"no expectations recorded in {directory} — nothing evidences that "
+                        "any phase ran, so the invariants below describe an unknown workload")
     if expectations.exists():
         wanted = {}
         for row in expectations.read_text().splitlines():
