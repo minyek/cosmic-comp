@@ -14,6 +14,8 @@ use smithay::{
     },
 };
 
+use smithay::utils::user_data::UserDataMap;
+
 use crate::shell::{CosmicSurface, Workspace};
 
 type ImageCopySessionsData = RefCell<ImageCopySessions>;
@@ -39,6 +41,54 @@ impl SessionUserData {
 pub struct ImageCopySessions {
     sessions: Vec<Session>,
     cursor_sessions: Vec<CursorSession>,
+}
+
+impl Drop for ImageCopySessions {
+    fn drop(&mut self) {
+        for session in self.sessions.drain(..) {
+            if let Some(sd) = session.user_data().get::<SessionData>() {
+                sd.lock().unwrap().offscreen = None;
+            }
+        }
+        for session in self.cursor_sessions.drain(..) {
+            if let Some(sd) = session.user_data().get::<SessionData>() {
+                sd.lock().unwrap().offscreen = None;
+            }
+        }
+    }
+}
+
+/// Drop the capture sessions stored in the given `UserDataMap`, releasing their
+/// offscreen renderbuffers immediately.
+///
+/// Used on output removal: an output capture session's [`SessionUserData`] holds
+/// an `OutputDamageTracker` that references the `Output`, which in turn owns the
+/// session — a cycle that stops the output (and its sessions) from being dropped
+/// on their own. Draining the sessions here breaks that cycle.
+///
+/// It also clears each session's offscreen renderbuffer directly: dropping a
+/// `Session` does not free it, because smithay's `ImageCopyCaptureState` keeps a
+/// `SessionRef` clone sharing the same `Arc<UserDataMap>` until its own
+/// `cleanup()` runs after a client roundtrip. The shared map makes the clear
+/// visible to that lingering ref.
+pub fn stop_all_capture_sessions(user_data: &UserDataMap) {
+    if let Some(data) = user_data.get::<ImageCopySessionsData>() {
+        let mut data = data.borrow_mut();
+        for session in data.sessions.drain(..) {
+            // Free GPU renderbuffer immediately; the Arc<UserDataMap> is
+            // shared with the SessionRef in ImageCopyCaptureState, so
+            // this releases VRAM without waiting for the client roundtrip.
+            if let Some(sd) = session.user_data().get::<SessionData>() {
+                sd.lock().unwrap().offscreen = None;
+            }
+            // Session::drop() sends `stopped` and fails active frames.
+        }
+        for session in data.cursor_sessions.drain(..) {
+            if let Some(sd) = session.user_data().get::<SessionData>() {
+                sd.lock().unwrap().offscreen = None;
+            }
+        }
+    }
 }
 
 pub trait SessionHolder {

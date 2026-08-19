@@ -33,6 +33,9 @@ use cosmic_protocols::toplevel_info::v1::server::{
 use tracing::error;
 
 pub trait Window: IsAlive + Clone + PartialEq + Send {
+    /// A weak reference type that does not keep the window alive.
+    type Weak: Clone + Send + 'static;
+
     fn title(&self) -> String;
     fn app_id(&self) -> String;
     fn is_activated(&self) -> bool;
@@ -43,6 +46,8 @@ pub trait Window: IsAlive + Clone + PartialEq + Send {
     fn is_resizing(&self) -> bool;
     fn global_geometry(&self) -> Option<Rectangle<i32, Global>>;
     fn user_data(&self) -> &UserDataMap;
+    fn downgrade(&self) -> Self::Weak;
+    fn upgrade(weak: &Self::Weak) -> Option<Self>;
 }
 
 #[derive(Debug)]
@@ -102,7 +107,7 @@ pub struct ToplevelHandleStateInner<W: Window> {
     title: String,
     app_id: String,
     states: Option<Vec<States>>,
-    pub(super) window: Option<W>,
+    window: Option<W::Weak>,
 }
 pub type ToplevelHandleState<W> = Mutex<ToplevelHandleStateInner<W>>;
 
@@ -116,7 +121,7 @@ impl<W: Window> ToplevelHandleStateInner<W> {
             title: String::new(),
             app_id: String::new(),
             states: None,
-            window: Some(window.clone()),
+            window: Some(window.downgrade()),
         })
     }
 
@@ -669,7 +674,7 @@ where
 pub fn window_from_handle<W: Window + 'static>(handle: ZcosmicToplevelHandleV1) -> Option<W> {
     handle
         .data::<ToplevelHandleState<W>>()
-        .and_then(|state| state.lock().unwrap().window.clone())
+        .and_then(|state| state.lock().unwrap().window.as_ref().and_then(W::upgrade))
 }
 
 pub fn window_from_ext<W: Window + 'static, D>(

@@ -74,8 +74,8 @@ use crate::{
     utils::{prelude::*, quirks::WORKSPACE_OVERVIEW_NAMESPACE},
     wayland::{
         handlers::{
-            toplevel_management::minimize_rectangle, xdg_activation::ActivationContext,
-            xdg_shell::popup::get_popup_toplevel,
+            image_copy_capture::stop_all_capture_sessions, toplevel_management::minimize_rectangle,
+            xdg_activation::ActivationContext, xdg_shell::popup::get_popup_toplevel,
         },
         protocols::{
             toplevel_info::{
@@ -96,7 +96,9 @@ pub mod layout;
 mod seats;
 mod workspace;
 pub mod zoom;
-pub use self::element::{CosmicMapped, CosmicMappedRenderElement, CosmicSurface};
+pub use self::element::{
+    CosmicMapped, CosmicMappedRenderElement, CosmicSurface, WeakCosmicSurface,
+};
 pub use self::seats::*;
 pub use self::workspace::*;
 use self::zoom::{OutputZoomState, ZoomState};
@@ -612,6 +614,7 @@ impl WorkspaceSet {
             self.workspaces[self.active].refresh();
         }
         self.sticky_layer.refresh();
+        self.minimized_windows.retain(|w| w.alive());
     }
 
     fn add_empty_workspace(&mut self, state: &mut WorkspaceUpdateGuard<State>) {
@@ -930,6 +933,10 @@ impl Workspaces {
             return;
         }
 
+        stop_all_capture_sessions(output.user_data());
+        if let Some(zoom_state) = output.user_data().get::<Mutex<OutputZoomState>>() {
+            zoom_state.lock().unwrap().output_leave(output);
+        }
         if let Some(set) = self.sets.shift_remove(output) {
             {
                 let map = layer_map_for_output(output);
@@ -1610,6 +1617,7 @@ impl Common {
         );
         self.popups.cleanup();
         self.toplevel_info_state.refresh(&self.workspace_state);
+        self.image_copy_capture_state.cleanup();
         self.refresh_idle_inhibit();
         if let Some(mut a11y_keyboard_monitor) = self.dbus_state.a11y_keyboard_monitor() {
             a11y_keyboard_monitor.refresh();
@@ -2623,6 +2631,16 @@ impl Shell {
             .retain(|pending| pending.surface.alive());
         self.pending_windows
             .retain(|pending| pending.surface.alive());
+        self.pending_activations.retain(|key, _| match key {
+            ActivationKey::Wayland(surface) => {
+                use smithay::reexports::wayland_server::Resource;
+                surface.is_alive()
+            }
+            ActivationKey::X11(_) => self
+                .pending_windows
+                .iter()
+                .any(|p| &ActivationKey::from(&p.surface) == key),
+        });
     }
 
     pub fn update_pointer_position(&mut self, location: Point<f64, Local>, output: &Output) {
