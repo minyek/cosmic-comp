@@ -45,7 +45,9 @@ mod render;
 mod user_data;
 pub use self::render::*;
 use self::user_data::*;
-pub use self::user_data::{FrameHolder, ImageCopySessions, SessionData, SessionHolder};
+pub use self::user_data::{
+    FrameHolder, ImageCopySessions, SessionData, SessionHolder, stop_all_capture_sessions,
+};
 
 fn default_cursor_size() -> Size<i32, BufferCoords> {
     Size::new(64, 64)
@@ -198,6 +200,7 @@ impl ImageCopyCaptureHandler for State {
         match ImageCaptureSourceKind::from_source(&session.source()) {
             ImageCaptureSourceKind::Output(weak) => {
                 let Some(mut output) = weak.upgrade() else {
+                    session.stop();
                     return;
                 };
 
@@ -228,6 +231,7 @@ impl ImageCopyCaptureHandler for State {
             ImageCaptureSourceKind::Workspace(handle) => {
                 let mut shell = self.common.shell.write();
                 let Some(workspace) = shell.workspaces.space_for_handle_mut(&handle) else {
+                    session.stop();
                     return;
                 };
 
@@ -258,6 +262,7 @@ impl ImageCopyCaptureHandler for State {
             }
             ImageCaptureSourceKind::Toplevel(toplevel) => {
                 let Some(mut toplevel) = toplevel.upgrade() else {
+                    session.stop();
                     return;
                 };
 
@@ -293,6 +298,7 @@ impl ImageCopyCaptureHandler for State {
         match ImageCaptureSourceKind::from_source(&session.source()) {
             ImageCaptureSourceKind::Output(weak) => {
                 let Some(mut output) = weak.upgrade() else {
+                    frame.fail(CaptureFailureReason::Stopped);
                     return;
                 };
 
@@ -304,6 +310,7 @@ impl ImageCopyCaptureHandler for State {
             }
             ImageCaptureSourceKind::Toplevel(toplevel) => {
                 let Some(toplevel) = toplevel.upgrade() else {
+                    frame.fail(CaptureFailureReason::Stopped);
                     return;
                 };
 
