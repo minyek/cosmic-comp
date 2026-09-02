@@ -114,7 +114,8 @@ features = [
 ]
 
 [dependencies.smithay-egui]
-version = "0.2.0"
+git = "https://github.com/Smithay/smithay-egui.git"
+rev = "6511552"
 features = ["svg"]
 optional = true
 
@@ -146,4 +147,4 @@ lto = "fat"
 cosmic-protocols = { git = "https://github.com/pop-os//cosmic-protocols", branch = "main" }
 
 [patch.crates-io]
-smithay = { git = "https://github.com/smithay/smithay.git", rev = "e3d461a" }
+smithay = { git = "https://github.com/smithay/smithay.git", rev = "60aafc2" }
