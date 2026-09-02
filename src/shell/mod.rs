@@ -1617,7 +1617,6 @@ impl Common {
         );
         self.popups.cleanup();
         self.toplevel_info_state.refresh(&self.workspace_state);
-        self.image_copy_capture_state.cleanup();
         self.refresh_idle_inhibit();
         if let Some(mut a11y_keyboard_monitor) = self.dbus_state.a11y_keyboard_monitor() {
             a11y_keyboard_monitor.refresh();

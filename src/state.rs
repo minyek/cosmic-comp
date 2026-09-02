@@ -178,9 +178,7 @@ impl ClientData for ClientState {
         self.evlh.insert_idle(move |state| {
             if let BackendData::Kms(kms_state) = &mut state.backend {
                 let primary = *kms_state.primary_node.read().unwrap();
-                // Remove the client from every device it imported on, not just
-                // the first match: a multi-GPU client can be active on several
-                // nodes, and breaking early would leak its id on the rest.
+                // A client can import buffers on multiple GPUs.
                 let mut freed_device = false;
                 for device in kms_state.drm_devices.values_mut() {
                     if device.inner.active_clients.remove(&client_id)

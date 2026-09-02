@@ -460,7 +460,7 @@ pub struct CursorStateInner {
 
     cursors: HashMap<CursorIcon, Cursor>,
     current_image: Option<Image>,
-    image_cache: Vec<CachedFrame>,
+    cursor_cache: CursorFrameCache,
 
     hidden: bool,
     idle_timer: Option<RegistrationToken>,
@@ -483,6 +483,21 @@ struct CachedFrame {
     image: Image,
     buffer: MemoryRenderBuffer,
     unmagnified: bool,
+}
+
+#[derive(Default)]
+struct CursorFrameCache {
+    cursor: Option<CursorIcon>,
+    frames: Vec<CachedFrame>,
+}
+
+impl CursorFrameCache {
+    fn select_cursor(&mut self, cursor: CursorIcon) {
+        if self.cursor != Some(cursor) {
+            self.frames.clear();
+            self.cursor = Some(cursor);
+        }
+    }
 }
 
 /// One sampled pointer position on the recent motion path.
@@ -551,7 +566,7 @@ impl CursorStateInner {
             return;
         }
 
-        self.image_cache.retain(|frame| frame.unmagnified);
+        self.cursor_cache.frames.retain(|frame| frame.unmagnified);
     }
 
     /// Feed one relative-motion event into the shake detector.
@@ -692,7 +707,7 @@ impl Default for CursorStateInner {
 
             cursors: HashMap::new(),
             current_image: None,
-            image_cache: Vec::new(),
+            cursor_cache: CursorFrameCache::default(),
 
             hidden: false,
             idle_timer: None,
@@ -760,6 +775,7 @@ pub fn draw_cursor<R>(
             return;
         }
 
+        state.cursor_cache.select_cursor(current_cursor);
         let output_scale = scale.x.max(scale.y);
         let integer_scale = (output_scale * buffer_scale).ceil() as u32;
         let unmagnified_px = state.size() * (output_scale.ceil() as u32);
@@ -774,7 +790,12 @@ pub fn draw_cursor<R>(
         let key = (current_cursor, size_px, frame_idx);
 
         // Rasterize and upload this (shape, size, frame) only if not cached.
-        let index = match state.image_cache.iter().position(|frame| frame.key == key) {
+        let index = match state
+            .cursor_cache
+            .frames
+            .iter()
+            .position(|frame| frame.key == key)
+        {
             Some(index) => index,
             None => {
                 let image = {
@@ -790,18 +811,18 @@ pub fn draw_cursor<R>(
                     Transform::Normal,
                     None,
                 );
-                state.image_cache.push(CachedFrame {
+                state.cursor_cache.frames.push(CachedFrame {
                     key,
                     image,
                     buffer,
                     unmagnified: size_px == unmagnified_px,
                 });
-                state.image_cache.len() - 1
+                state.cursor_cache.frames.len() - 1
             }
         };
 
         let (frame, pointer_image) = {
-            let entry = &mut state.image_cache[index];
+            let entry = &mut state.cursor_cache.frames[index];
             entry.unmagnified |= size_px == unmagnified_px;
             (entry.image.clone(), entry.buffer.clone())
         };
@@ -900,5 +921,60 @@ fn hide_cursor(state: &mut State, seat: &Seat<State>) {
     let outputs: Vec<_> = state.common.shell.read().outputs().cloned().collect();
     for output in outputs {
         state.backend.schedule_render(&output);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn cached_frame(cursor: CursorIcon) -> CachedFrame {
+        let image = Image {
+            size: 1,
+            width: 1,
+            height: 1,
+            xhot: 0,
+            yhot: 0,
+            delay: 0,
+            pixels_rgba: vec![0; 4],
+            pixels_argb: Vec::new(),
+        };
+        let buffer = MemoryRenderBuffer::from_slice(
+            &image.pixels_rgba,
+            Fourcc::Argb8888,
+            (1, 1),
+            1,
+            Transform::Normal,
+            None,
+        );
+
+        CachedFrame {
+            key: (cursor, 1, 0),
+            image,
+            buffer,
+            unmagnified: true,
+        }
+    }
+
+    #[test]
+    fn changing_cursor_shape_drops_cached_frames() {
+        let mut cache = CursorFrameCache::default();
+        cache.select_cursor(CursorIcon::Default);
+        cache.frames.push(cached_frame(CursorIcon::Default));
+
+        cache.select_cursor(CursorIcon::Grabbing);
+
+        assert!(cache.frames.is_empty());
+    }
+
+    #[test]
+    fn unchanged_cursor_shape_keeps_cached_frames() {
+        let mut cache = CursorFrameCache::default();
+        cache.select_cursor(CursorIcon::Default);
+        cache.frames.push(cached_frame(CursorIcon::Default));
+
+        cache.select_cursor(CursorIcon::Default);
+
+        assert_eq!(cache.frames.len(), 1);
     }
 }
