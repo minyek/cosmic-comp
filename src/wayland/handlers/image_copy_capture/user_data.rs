@@ -75,9 +75,6 @@ pub fn stop_all_capture_sessions(user_data: &UserDataMap) {
     if let Some(data) = user_data.get::<ImageCopySessionsData>() {
         let mut data = data.borrow_mut();
         for session in data.sessions.drain(..) {
-            // Free GPU renderbuffer immediately; the Arc<UserDataMap> is
-            // shared with the SessionRef in ImageCopyCaptureState, so
-            // this releases VRAM without waiting for the client roundtrip.
             if let Some(sd) = session.user_data().get::<SessionData>() {
                 sd.lock().unwrap().offscreen = None;
             }
