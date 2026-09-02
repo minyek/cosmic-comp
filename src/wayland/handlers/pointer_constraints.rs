@@ -87,9 +87,7 @@ impl PointerConstraintsHandler for State {
     ) {
         match constraint_remove {
             ConstraintRemove::PointerLeave(_) => {
-                // If the constraint was broken by the pointer forcibly leaving the surface, then it doesn't
-                // make much sense to warp it.
-                return;
+                // A forced pointer leave should not warp the pointer back to the surface.
             }
             ConstraintRemove::Destroyed(constraint) => {
                 let Some(seat) = self
