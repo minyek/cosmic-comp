@@ -791,7 +791,12 @@ pub fn draw_cursor<R>(
         let key = (current_cursor, size_px, frame_idx);
 
         // Rasterize and upload this (shape, size, frame) only if not cached.
-        let index = match state.image_cache.frames.iter().position(|frame| frame.key == key) {
+        let index = match state
+            .image_cache
+            .frames
+            .iter()
+            .position(|frame| frame.key == key)
+        {
             Some(index) => index,
             None => {
                 let image = {

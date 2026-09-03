@@ -96,12 +96,20 @@ impl RendererCleanupSchedule {
         self.pending = true;
     }
 
-    fn take_if_active(&mut self, session_active: bool) -> bool {
+    fn run_if_active<E>(
+        &mut self,
+        session_active: bool,
+        cleanup: impl FnOnce() -> Result<(), E>,
+    ) -> Result<(), E> {
         if !self.pending || !session_active {
-            return false;
+            return Ok(());
         }
         self.pending = false;
-        true
+        if let Err(err) = cleanup() {
+            self.pending = true;
+            return Err(err);
+        }
+        Ok(())
     }
 }
 
@@ -742,14 +750,12 @@ impl KmsState {
 
     /// Drain the GL destruction queues of the main-thread renderers, if scheduled.
     pub fn run_scheduled_renderer_cleanup(&mut self) {
-        if !self
+        if let Err(err) = self
             .renderer_cleanup
-            .take_if_active(self.session.is_active())
+            .run_if_active(self.session.is_active(), || {
+                self.api.cleanup_texture_cache()
+            })
         {
-            return;
-        }
-        if let Err(err) = self.api.cleanup_texture_cache() {
-            self.renderer_cleanup.schedule();
             debug!(?err, "Failed to drain main-thread renderer cleanup queue");
         }
     }
@@ -1390,28 +1396,69 @@ mod tests {
         let mut cleanup = RendererCleanupSchedule::default();
         cleanup.schedule();
         cleanup.schedule();
+        let mut calls = 0;
 
-        assert!(cleanup.take_if_active(true));
-        assert!(!cleanup.take_if_active(true));
+        cleanup
+            .run_if_active(true, || {
+                calls += 1;
+                Ok::<_, ()>(())
+            })
+            .unwrap();
+        cleanup
+            .run_if_active(true, || {
+                calls += 1;
+                Ok::<_, ()>(())
+            })
+            .unwrap();
+
+        assert_eq!(calls, 1);
     }
 
     #[test]
     fn inactive_session_defers_renderer_cleanup() {
         let mut cleanup = RendererCleanupSchedule::default();
         cleanup.schedule();
+        let mut calls = 0;
 
-        assert!(!cleanup.take_if_active(false));
-        assert!(cleanup.take_if_active(true));
+        cleanup
+            .run_if_active(false, || {
+                calls += 1;
+                Ok::<_, ()>(())
+            })
+            .unwrap();
+        assert_eq!(calls, 0);
+
+        cleanup
+            .run_if_active(true, || {
+                calls += 1;
+                Ok::<_, ()>(())
+            })
+            .unwrap();
+
+        assert_eq!(calls, 1);
     }
 
     #[test]
     fn failed_cleanup_can_be_rescheduled() {
         let mut cleanup = RendererCleanupSchedule::default();
         cleanup.schedule();
-        assert!(cleanup.take_if_active(true));
+        let mut calls = 0;
 
-        cleanup.schedule();
+        assert!(
+            cleanup
+                .run_if_active(true, || {
+                    calls += 1;
+                    Err("cleanup failed")
+                })
+                .is_err()
+        );
+        cleanup
+            .run_if_active(true, || {
+                calls += 1;
+                Ok::<_, &str>(())
+            })
+            .unwrap();
 
-        assert!(cleanup.take_if_active(true));
+        assert_eq!(calls, 2);
     }
 }
