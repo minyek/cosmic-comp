@@ -13,6 +13,18 @@ use smithay::{
 
 pub use smithay::wayland::pointer_constraints::{PointerConstraintRef, with_pointer_constraint};
 
+fn cursor_hint_for_constraint_removal<T: PartialEq>(
+    focused_surface: Option<&T>,
+    surface: &T,
+    hint: Option<(T, Point<f64, Logical>)>,
+) -> Option<Point<f64, Logical>> {
+    if focused_surface != Some(surface) {
+        return None;
+    }
+
+    hint.and_then(|(hint_surface, location)| (hint_surface == *surface).then_some(location))
+}
+
 impl PointerConstraintsHandler for State {
     fn new_constraint(&mut self, surface: &WlSurface, pointer: &PointerHandle<Self>) {
         let seat = self
@@ -86,10 +98,7 @@ impl PointerConstraintsHandler for State {
         constraint_remove: ConstraintRemove,
     ) {
         match constraint_remove {
-            ConstraintRemove::PointerLeave(_) => {
-                // If the constraint was broken by the pointer forcibly leaving the surface, then it doesn't
-                // make much sense to warp it.
-            }
+            ConstraintRemove::PointerLeave(_) => {}
             ConstraintRemove::Destroyed(constraint) => {
                 let Some(seat) = self
                     .common
@@ -102,14 +111,20 @@ impl PointerConstraintsHandler for State {
                 else {
                     return;
                 };
-                let Some((hint_surface, hint_location)) = seat.pointer_constraint_hint() else {
+                let focused_surface = pointer
+                    .last_enter()
+                    .and_then(|_| pointer.current_focus())
+                    .and_then(|focus| focus.wl_surface().map(|surface| surface.into_owned()));
+                let Some(hint_location) = cursor_hint_for_constraint_removal(
+                    focused_surface.as_ref(),
+                    surface,
+                    seat.pointer_constraint_hint(),
+                ) else {
                     return;
                 };
 
-                if hint_surface == *surface {
-                    self.apply_cursor_hint(surface, pointer, hint_location, Some(&constraint));
-                    seat.set_pointer_constraint_hint(None);
-                }
+                self.apply_cursor_hint(surface, pointer, hint_location, Some(&constraint));
+                seat.set_pointer_constraint_hint(None);
             }
         }
     }
@@ -136,5 +151,42 @@ impl PointerConstraintsHandler for State {
                 seat.set_pointer_constraint_hint(Some((surface.clone(), location)));
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pointer_leave_does_not_yield_cursor_hint() {
+        let hint = Some((1_u8, Point::from((12.0, 24.0))));
+
+        assert_eq!(cursor_hint_for_constraint_removal(None, &1, hint), None);
+    }
+
+    #[test]
+    fn matching_focused_surface_yields_cursor_hint() {
+        let location = Point::from((12.0, 24.0));
+        let hint = Some((1_u8, location));
+
+        assert_eq!(
+            cursor_hint_for_constraint_removal(Some(&1), &1, hint),
+            Some(location)
+        );
+    }
+
+    #[test]
+    fn unrelated_pointer_focus_does_not_yield_cursor_hint() {
+        let hint = Some((1_u8, Point::from((12.0, 24.0))));
+
+        assert_eq!(cursor_hint_for_constraint_removal(Some(&2), &1, hint), None);
+    }
+
+    #[test]
+    fn unrelated_hint_surface_does_not_yield_cursor_hint() {
+        let hint = Some((2_u8, Point::from((12.0, 24.0))));
+
+        assert_eq!(cursor_hint_for_constraint_removal(Some(&1), &1, hint), None);
     }
 }
