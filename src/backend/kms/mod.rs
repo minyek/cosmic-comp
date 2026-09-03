@@ -83,7 +83,34 @@ pub struct KmsState {
 
     pub syncobj_state: Option<DrmSyncobjState>,
     pub dmabuf_global: Option<DmabufGlobal>,
-    pending_renderer_cleanup: bool,
+    renderer_cleanup: RendererCleanupSchedule,
+}
+
+#[derive(Debug, Default)]
+struct RendererCleanupSchedule {
+    pending: bool,
+}
+
+impl RendererCleanupSchedule {
+    fn schedule(&mut self) {
+        self.pending = true;
+    }
+
+    fn run_if_active<E>(
+        &mut self,
+        session_active: bool,
+        cleanup: impl FnOnce() -> Result<(), E>,
+    ) -> Result<(), E> {
+        if !self.pending || !session_active {
+            return Ok(());
+        }
+        self.pending = false;
+        if let Err(err) = cleanup() {
+            self.pending = true;
+            return Err(err);
+        }
+        Ok(())
+    }
 }
 
 pub struct KmsGuard<'a> {
@@ -142,7 +169,7 @@ pub fn init_backend(
 
         syncobj_state: None,
         dmabuf_global: None,
-        pending_renderer_cleanup: false,
+        renderer_cleanup: RendererCleanupSchedule::default(),
     });
 
     // manually add already present gpus
@@ -791,16 +818,17 @@ impl KmsState {
     /// rendering or an explicit drain. Those renderers may not draw again for a long time,
     /// so until the drain runs the dead client's buffers stay pinned in VRAM.
     pub fn schedule_renderer_cleanup(&mut self) {
-        self.pending_renderer_cleanup = true;
+        self.renderer_cleanup.schedule();
     }
 
     /// Drain the GL destruction queues of the main-thread renderers, if scheduled.
     pub fn run_scheduled_renderer_cleanup(&mut self) {
-        if !self.pending_renderer_cleanup || !self.session.is_active() {
-            return;
-        }
-        self.pending_renderer_cleanup = false;
-        if let Err(err) = self.api.cleanup_texture_cache() {
+        if let Err(err) = self
+            .renderer_cleanup
+            .run_if_active(self.session.is_active(), || {
+                self.api.cleanup_texture_cache()
+            })
+        {
             debug!(?err, "Failed to drain main-thread renderer cleanup queue");
         }
     }
@@ -977,6 +1005,27 @@ impl KmsGuard<'_> {
     }
 
     pub fn apply_config_for_outputs(
+        &mut self,
+        test_only: bool,
+        loop_handle: &LoopHandle<'static, State>,
+        screen_filter: &ScreenFilter,
+        shell: Arc<parking_lot::RwLock<Shell>>,
+        startup_done: Arc<AtomicBool>,
+        clock: &Clock<Monotonic>,
+    ) -> Result<(), anyhow::Error> {
+        let result = self.try_apply_config_for_outputs(
+            test_only,
+            loop_handle,
+            screen_filter,
+            shell,
+            startup_done,
+            clock,
+        );
+        self.invalidate_renderer_caches();
+        result
+    }
+
+    fn try_apply_config_for_outputs(
         &mut self,
         test_only: bool,
         loop_handle: &LoopHandle<'static, State>,
@@ -1393,8 +1442,6 @@ impl KmsGuard<'_> {
             }
         }
 
-        self.invalidate_renderer_caches();
-
         Ok(())
     }
 
@@ -1413,5 +1460,79 @@ impl KmsGuard<'_> {
         if let Err(err) = self.api.invalidate_caches() {
             debug!(?err, "Failed to invalidate main-thread renderer caches");
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::RendererCleanupSchedule;
+
+    #[test]
+    fn repeated_cleanup_requests_are_batched() {
+        let mut cleanup = RendererCleanupSchedule::default();
+        cleanup.schedule();
+        cleanup.schedule();
+        let mut calls = 0;
+
+        cleanup
+            .run_if_active(true, || {
+                calls += 1;
+                Ok::<_, ()>(())
+            })
+            .unwrap();
+        cleanup
+            .run_if_active(true, || {
+                calls += 1;
+                Ok::<_, ()>(())
+            })
+            .unwrap();
+
+        assert_eq!(calls, 1);
+    }
+
+    #[test]
+    fn inactive_session_defers_renderer_cleanup() {
+        let mut cleanup = RendererCleanupSchedule::default();
+        cleanup.schedule();
+        let mut calls = 0;
+
+        cleanup
+            .run_if_active(false, || {
+                calls += 1;
+                Ok::<_, ()>(())
+            })
+            .unwrap();
+        cleanup
+            .run_if_active(true, || {
+                calls += 1;
+                Ok::<_, ()>(())
+            })
+            .unwrap();
+
+        assert_eq!(calls, 1);
+    }
+
+    #[test]
+    fn failed_cleanup_is_retried() {
+        let mut cleanup = RendererCleanupSchedule::default();
+        cleanup.schedule();
+        let mut calls = 0;
+
+        assert!(
+            cleanup
+                .run_if_active(true, || {
+                    calls += 1;
+                    Err("cleanup failed")
+                })
+                .is_err()
+        );
+        cleanup
+            .run_if_active(true, || {
+                calls += 1;
+                Ok::<_, &str>(())
+            })
+            .unwrap();
+
+        assert_eq!(calls, 2);
     }
 }
