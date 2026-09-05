@@ -842,7 +842,7 @@ impl CosmicStack {
                 )));
             };
 
-            let radii = radii.map(|[a, _, c, _]| [a, 0, c, 0]);
+            let radii = radii.map(|[_, _, c, d]| [0, 0, c, d]);
             windows[active].push_render_elements(
                 renderer,
                 window_loc,
@@ -1015,17 +1015,17 @@ impl CosmicStack {
                     .corner_radius(geometry_size)
                     .unwrap_or([default_radius; 4]);
 
+                corners[0] = 0;
                 corners[1] = 0;
-                corners[3] = 0;
 
                 corners
             } else {
                 let mut corners = active_window.corner_radius(geometry_size).unwrap_or(radii);
 
-                corners[0] = radii[0].max(corners[0]);
+                corners[0] = radii[0];
                 corners[1] = radii[1];
                 corners[2] = radii[2].max(corners[2]);
-                corners[3] = radii[3];
+                corners[3] = radii[3].max(corners[3]);
 
                 corners
             }
@@ -1724,12 +1724,12 @@ impl PointerTarget<State> for CosmicStack {
                         state.common.config.cosmic_conf.edge_snap_threshold,
                         false,
                     );
-                    if let Some((grab, focus)) = res {
-                        if let GrabType::Pointer = grab.grab_type() {
-                            seat.get_pointer()
-                                .unwrap()
-                                .set_grab(state, grab, serial, focus);
-                        }
+                    if let Some((grab, focus)) = res
+                        && let GrabType::Pointer = grab.grab_type()
+                    {
+                        seat.get_pointer()
+                            .unwrap()
+                            .set_grab(state, grab, serial, focus);
                     }
                 });
             }
@@ -1785,12 +1785,12 @@ impl PointerTarget<State> for CosmicStack {
                         &state.common.event_loop_handle,
                         false,
                     );
-                    if let Some((grab, focus)) = res {
-                        if let GrabType::Pointer = grab.grab_type() {
-                            seat.get_pointer()
-                                .unwrap()
-                                .set_grab(state, grab, serial, focus);
-                        }
+                    if let Some((grab, focus)) = res
+                        && let GrabType::Pointer = grab.grab_type()
+                    {
+                        seat.get_pointer()
+                            .unwrap()
+                            .set_grab(state, grab, serial, focus);
                     }
                 });
             }
@@ -1999,13 +1999,13 @@ impl TabletToolTarget<State> for CosmicStack {
                         state.common.config.cosmic_conf.edge_snap_threshold,
                         false,
                     );
-                    if let Some((grab, focus)) = res {
-                        if let GrabType::TabletTool = grab.grab_type() {
-                            seat.tablet_seat()
-                                .get_tool(grab.tool().unwrap())
-                                .unwrap()
-                                .set_grab(state, grab, InputTime::now(), serial, focus);
-                        }
+                    if let Some((grab, focus)) = res
+                        && let GrabType::TabletTool = grab.grab_type()
+                    {
+                        seat.tablet_seat()
+                            .get_tool(grab.tool().unwrap())
+                            .unwrap()
+                            .set_grab(state, grab, InputTime::now(), serial, focus);
                     }
                 });
             }
