@@ -25,10 +25,15 @@ python3 docs/vram-tools/census.py verdict "$CTL"
 ```
 
 Use `fault` or `hardware` in separate fresh sessions. Hardware also requires
-`--other-output` on another physical GPU for the `multi-gpu` phase. The driver
-checks distinct DRM device paths, requests the owned helper fullscreen on each
-named output, waits for surface/output membership and requires two GPU client
-references to appear and be retired. Missing multi-GPU hardware is incomplete.
+repeated `--render-node /dev/dri/renderD...` arguments on distinct physical GPUs
+and the standalone `gpu-client` executable (`--gpu-client` overrides its path).
+The GPU helper uses one Wayland connection and DMA-BUF v6 sampling-device hints
+to request imports on every specified GPU. The driver checks all imports were
+accepted and requires GPU client references to appear and be retired. Physical
+disconnect selects the render node belonging to the target connector and holds
+its GPU helper across the unplug. The visible SHM helper proves output membership
+only; it cannot populate the compositor's DMA-BUF client registry.
+Missing multi-GPU hardware or DMA-BUF protocol support is incomplete.
 `all` aliases `normal`;
 `faultall` aliases `fault`. Individual phase names are also accepted, with their
 own declared scope. `--rounds`, `--settle`, `--client`, and `--directory` configure
@@ -70,6 +75,13 @@ Runtime fault requests create owned tokens. Service teardown and explicit driver
 disarm requests remove only those tokens whose inode and request UUID still match;
 unrelated or replacement arm files are preserved. Single fault phases use the
 same fault-mode catalog as the full fault suite.
+
+Output restoration retries the exact saved KDL once after a command failure.
+A fault phase may continue only when its own census proves exactly one injected
+failure and one preserved-error event; unexpected errors remain incomplete even
+if the recovery restore succeeds. X11 activation uses real startup tokens and
+owned mapped/destroyed X11 windows; both insertion and pruning counters must
+advance. Successful token consumption by normal mapping does not prove pruning.
 
 ## Validation and limits
 

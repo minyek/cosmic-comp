@@ -55,6 +55,11 @@ def plan(mode, rounds):
             retained("retest.pending_wayland_activations"),
             retained("retest.pending_x11_activations"),
         ],
+        "activation-x11": [
+            delta("retest.x11_activations_inserted"),
+            delta("retest.x11_activations_pruned"),
+            retained("retest.pending_x11_activations"),
+        ],
         "cursor": [
             delta("retest.cursor_shape_changes"),
             delta("retest.cursor_cache_hits"),
@@ -97,8 +102,11 @@ def plan(mode, rounds):
     hardware = {
         "physical-disconnect": [
             delta("retest.output_removals"),
-            delta("retest.client_gpu_removals"),
+            peak("toplevels"),
+            retained("toplevels"),
             peak("retest.gpu_clients"),
+            delta("retest.client_gpu_removals"),
+            retained("retest.gpu_clients"),
         ],
         "multi-gpu": [
             {"kind": "peak_above", "counter": "retest.gpu_clients", "minimum": 2},
@@ -138,9 +146,9 @@ def run(*command, **kwargs):
 
 
 class Client:
-    def __init__(self, executable, evidence):
+    def __init__(self, command, evidence):
         self.process = subprocess.Popen(
-            [str(executable), "180"],
+            command,
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=evidence,
@@ -150,6 +158,7 @@ class Client:
         self.pending = []
         self.pointer_local = None
         self.outputs = set()
+        self.keyboard_focused = False
         self.evidence = evidence
         self.reader = threading.Thread(target=self.read, daemon=True)
         self.reader.start()
@@ -168,6 +177,10 @@ class Client:
                     self.outputs.add(message["detail"]["name"])
                 elif message["event"] == "output-leave":
                     self.outputs.discard(message["detail"]["name"])
+                elif message["event"] == "keyboard-enter":
+                    self.keyboard_focused = True
+                elif message["event"] == "keyboard-leave":
+                    self.keyboard_focused = False
                 self.events.put(message)
             except ValueError:
                 self.events.put({"event": "error", "detail": line})
@@ -240,7 +253,7 @@ class Driver:
     @contextlib.contextmanager
     def client(self):
         with (self.root / f"{self.phase}-client.jsonl").open("a") as log:
-            client = Client(self.args.client, log)
+            client = Client([str(self.args.client), "180"], log)
             try:
                 client.wait("ready")
                 client.wait("managed")
@@ -250,6 +263,33 @@ class Driver:
                     client.send("destroy")
                 if client.process.wait(timeout=5):
                     raise RuntimeError("helper failed")
+            finally:
+                client.close()
+
+    @contextlib.contextmanager
+    def gpu_client(self, requested_nodes):
+        nodes = [str(Path(node).resolve(strict=True)) for node in requested_nodes]
+        if not nodes or len(nodes) != len(set(nodes)):
+            raise ValueError(
+                "GPU phases require unique explicit --render-node arguments"
+            )
+        command = [str(self.args.gpu_client), "--timeout", "180"]
+        for node in nodes:
+            command.extend(("--render-node", node))
+        with (self.root / f"{self.phase}-gpu-client.jsonl").open("a") as log:
+            client = Client(command, log)
+            try:
+                ready = client.wait("ready")
+                imports = {item["render_node"] for item in ready["detail"]["imports"]}
+                if imports != set(nodes):
+                    raise ValueError(
+                        "GPU helper did not prove every requested DMA-BUF import"
+                    )
+                yield client
+                if client.process.poll() is None:
+                    client.send("destroy")
+                if client.process.wait(timeout=5):
+                    raise RuntimeError("GPU helper failed")
             finally:
                 client.close()
 
@@ -274,8 +314,39 @@ class Driver:
             time.sleep(3)
             self.mark("output-disabled")
         finally:
-            run("cosmic-randr", "kdl", input=configuration, text=True)
+            self.restore_outputs(configuration)
         time.sleep(5)
+
+    def restore_outputs(self, configuration):
+        try:
+            run("cosmic-randr", "kdl", input=configuration, text=True)
+        except subprocess.CalledProcessError:
+            expected = False
+            try:
+                if self.phase in ("config", "scanout"):
+                    self.mark("restore-error-held")
+                    samples = [
+                        json.loads(line)
+                        for line in (self.root / "samples.jsonl")
+                        .read_text()
+                        .splitlines()
+                    ]
+                    baseline = next(
+                        sample["counters"]
+                        for sample in samples
+                        if sample["label"] == "pre-" + self.phase
+                    )
+                    current = samples[-1]["counters"]
+                    expected = all(
+                        current[f"retest.{self.phase}_{suffix}"]
+                        - baseline[f"retest.{self.phase}_{suffix}"]
+                        == 1
+                        for suffix in ("faults", "errors_preserved")
+                    )
+            finally:
+                run("cosmic-randr", "kdl", input=configuration, text=True)
+            if not expected:
+                raise
 
     def record(self):
         if not self.args.output:
@@ -345,6 +416,16 @@ class Driver:
                 client.wait("acknowledged", "pending-activate-ready")
                 self.mark("activation-held")
                 client.send("pending-destroy")
+            elif self.phase == "activation-x11":
+                for _ in range(self.args.rounds):
+                    client.send("focus")
+                    if not client.keyboard_focused:
+                        client.wait("keyboard-enter")
+                    client.send("x11-activate")
+                    client.wait("x11-map-submitted")
+                    client.wait("acknowledged", "x11-activate-ready")
+                    client.send("x11-destroy")
+                self.mark("x11-burst-complete")
             elif self.phase == "cursor":
                 self.key(125, 13)
                 try:
@@ -442,42 +523,57 @@ class Driver:
         if self.phase == "physical-disconnect":
             if not self.args.output:
                 raise ValueError("physical disconnect requires --output")
-            with self.client() as client:
+            paths = list(
+                Path("/sys/class/drm").glob(f"card*-{self.args.output}/status")
+            )
+            if len(paths) != 1:
+                raise ValueError("physical target output is absent or ambiguous")
+            card = paths[0].parent.name.split("-", 1)[0]
+            output_device = (Path("/sys/class/drm") / card / "device").resolve(
+                strict=True
+            )
+            nodes = [
+                node
+                for node in self.args.render_node
+                if (
+                    Path("/sys/class/drm")
+                    / Path(node).resolve(strict=True).name
+                    / "device"
+                ).resolve(strict=True)
+                == output_device
+            ]
+            if len(nodes) != 1:
+                raise ValueError(
+                    "physical disconnect needs exactly one render node for the target output GPU"
+                )
+            with self.client() as client, self.gpu_client(nodes) as gpu:
                 client.send("fullscreen-target", output=self.args.output)
                 client.wait_output(self.args.output)
                 time.sleep(2)
                 self.mark("owned-target-held")
                 input(f"Physically disconnect {self.args.output}, then press Enter: ")
                 self.mark("disconnected-held")
+                gpu.send("destroy")
+                gpu.process.wait(timeout=5)
                 client.send("destroy")
                 client.process.wait(timeout=5)
                 self.mark("disconnected-client-destroyed")
                 input(f"Reconnect {self.args.output}, then press Enter: ")
         elif self.phase == "multi-gpu":
-            targets = (self.args.output, self.args.other_output)
-            if None in targets or len(set(targets)) != 2:
+            devices = {
+                (
+                    Path("/sys/class/drm")
+                    / Path(node).resolve(strict=True).name
+                    / "device"
+                ).resolve(strict=True)
+                for node in self.args.render_node
+            }
+            if len(devices) < 2 or len(devices) != len(self.args.render_node):
                 raise ValueError(
-                    "multi-gpu requires distinct --output and --other-output"
+                    "multi-gpu requires --render-node arguments on distinct physical GPUs"
                 )
-            devices = set()
-            for target in targets:
-                paths = list(Path("/sys/class/drm").glob(f"card*-{target}/status"))
-                if len(paths) != 1 or paths[0].read_text().strip() != "connected":
-                    raise ValueError(f"output {target} is absent or ambiguous")
-                card = paths[0].parent.name.split("-", 1)[0]
-                devices.add(
-                    (Path("/sys/class/drm") / card / "device").resolve(strict=True)
-                )
-            if len(devices) != 2:
-                raise ValueError(
-                    "selected outputs do not belong to distinct DRM devices"
-                )
-            with self.client() as client:
-                for target in targets:
-                    client.send("fullscreen-target", output=target)
-                    client.wait_output(target)
-                    time.sleep(2)
-                    self.mark("rendered-" + target)
+            with self.gpu_client(self.args.render_node):
+                self.mark("multi-gpu-imports-held")
         elif self.phase == "locked-disconnect":
             print(
                 "Lock now. Locked baseline census in 15 seconds; keep locked until all reconnect checkpoints finish.",
@@ -556,6 +652,7 @@ class Driver:
             "sticky",
             "fullscreen",
             "activation",
+            "activation-x11",
             "cursor",
             "constraints",
         ):
@@ -660,7 +757,12 @@ def main():
     parser.add_argument("--rounds", type=int, default=8)
     parser.add_argument("--settle", type=int, default=90)
     parser.add_argument("--output", default=os.environ.get("TARGET_OUTPUT"))
-    parser.add_argument("--other-output")
+    parser.add_argument("--render-node", action="append", default=[])
+    parser.add_argument(
+        "--gpu-client",
+        type=Path,
+        default=TOOLS / "gpu-client/target/debug/vram-retest-gpu-client",
+    )
     parser.add_argument(
         "--client", type=Path, default=TOOLS / "clients/target/debug/vram-retest-client"
     )

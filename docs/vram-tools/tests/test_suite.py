@@ -1,4 +1,5 @@
 import importlib
+import json
 import os
 import queue
 import subprocess
@@ -13,6 +14,105 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 
 class Suites(unittest.TestCase):
+    def gpu_imports(self, accepted):
+        suite = importlib.import_module("suite")
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            node = root / "renderD128"
+            node.touch()
+            helper = root / "gpu-helper"
+            imports = [{"render_node": str(node)}] if accepted else []
+            helper.write_text(
+                "#!/usr/bin/env python3\nimport json, sys\n"
+                + f'print(json.dumps({{"event":"ready","detail":{{"imports":{imports!r}}}}}), flush=True)\n'
+                + 'request=json.loads(sys.stdin.readline())\nprint(json.dumps({"event":"acknowledged","detail":request}), flush=True)\n'
+            )
+            helper.chmod(0o755)
+            driver = suite.Driver(
+                SimpleNamespace(directory=directory, gpu_client=helper)
+            )
+            driver.phase = "multi-gpu"
+            with driver.gpu_client([str(node)]):
+                pass
+
+    def test_gpu_helper_requires_every_import_ready(self):
+        with self.assertRaisesRegex(ValueError, "every requested"):
+            self.gpu_imports(False)
+
+    def test_gpu_helper_with_matching_imports_shuts_down_cleanly(self):
+        self.gpu_imports(True)
+
+    def restore_after_error(self, fault_count):
+        suite = importlib.import_module("suite")
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            command = root / "cosmic-randr"
+            command.write_text(
+                '#!/bin/bash\nif [ -f "$ONCE" ]; then cat > "$RESTORED"; else touch "$ONCE"; exit 9; fi\n'
+            )
+            command.chmod(0o755)
+            records = [
+                {
+                    "label": "pre-config",
+                    "counters": {
+                        "retest.config_faults": 0,
+                        "retest.config_errors_preserved": 0,
+                    },
+                },
+                {
+                    "label": "restore-error-held",
+                    "counters": {
+                        "retest.config_faults": fault_count,
+                        "retest.config_errors_preserved": fault_count,
+                    },
+                },
+            ]
+            (root / "samples.jsonl").write_text(
+                "\n".join(json.dumps(record) for record in records)
+            )
+            driver = suite.Driver(SimpleNamespace(directory=directory))
+            driver.phase = "config"
+            failed = False
+            with (
+                patch.dict(
+                    os.environ,
+                    PATH=directory + os.pathsep + os.environ["PATH"],
+                    ONCE=str(root / "once"),
+                    RESTORED=str(root / "restored"),
+                ),
+                patch.object(driver, "mark"),
+            ):
+                try:
+                    driver.restore_outputs("exact saved configuration")
+                except subprocess.CalledProcessError:
+                    failed = True
+            return failed, (root / "restored").read_text()
+
+    def test_expected_injected_restore_error_retries_exact_configuration(self):
+        self.assertEqual(
+            self.restore_after_error(1), (False, "exact saved configuration")
+        )
+
+    def test_unexpected_restore_error_recovers_but_stays_incomplete(self):
+        self.assertEqual(
+            self.restore_after_error(0), (True, "exact saved configuration")
+        )
+
+    def test_x11_phase_requires_insertion_and_actual_pruning(self):
+        suite = importlib.import_module("suite")
+        phases = {phase["name"]: phase for phase in suite.plan("normal", 2)}
+        counters = {
+            check.get("counter") for check in phases["activation-x11"]["checks"]
+        }
+        self.assertTrue(
+            {
+                "retest.x11_activations_inserted",
+                "retest.x11_activations_pruned",
+                "retest.pending_x11_activations",
+            }
+            <= counters
+        )
+
     def test_managed_state_wait_rejects_earlier_unminimized_state(self):
         suite = importlib.import_module("suite")
         client = suite.Client.__new__(suite.Client)
