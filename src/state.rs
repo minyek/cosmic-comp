@@ -750,6 +750,7 @@ impl State {
                 ManagementCapabilities::Maximize,
                 ManagementCapabilities::Minimize,
                 ManagementCapabilities::MoveToWorkspace,
+                ManagementCapabilities::Sticky,
             ],
             client_not_sandboxed,
         );
