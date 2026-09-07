@@ -184,6 +184,23 @@ def _validate(manifest, samples, completion):
         if missing:
             errors.append(f"{sample['label']}: missing counters {sorted(missing)}")
             continue
+        for queue in QUEUES:
+            submitted, oldest, pending = (
+                counters[f"queue_progress.{queue}_{field}"]
+                for field in ("submitted", "oldest", "pending")
+            )
+            if (
+                any(
+                    type(value) is not int or value < 0
+                    for value in (submitted, oldest, pending)
+                )
+                or bool(oldest) != bool(pending)
+                or oldest > submitted
+                or pending > submitted
+            ):
+                errors.append(
+                    f"{sample['label']}: inconsistent {queue} outstanding queue snapshot"
+                )
         if counters["dead"] or counters["retest.stale_lock_surfaces"]:
             errors.append(f"{sample['label']}: retained dead resources")
         if counters["surface_threads"] != counters["retest.expected_surface_threads"]:
@@ -200,11 +217,6 @@ def _validate(manifest, samples, completion):
         for queue in QUEUES:
             submitted = f"queue_progress.{queue}_submitted"
             oldest = later["counters"][f"queue_progress.{queue}_oldest"]
-            pending = later["counters"][f"queue_progress.{queue}_pending"]
-            if bool(oldest) != bool(pending) or oldest > later["counters"][submitted]:
-                errors.append(
-                    f"{later['label']}: inconsistent {queue} outstanding queue snapshot"
-                )
             if (
                 later["counters"]["retest.session_active"]
                 and oldest
@@ -275,7 +287,14 @@ def verdict(directory):
                         print(
                             f"note: {queue} discarded during context retirement: {discarded}; explicit deletion unproven"
                         )
-    except (OSError, ValueError) as error:
+    except (
+        OSError,
+        ValueError,
+        KeyError,
+        TypeError,
+        IndexError,
+        AttributeError,
+    ) as error:
         errors = [f"incomplete evidence: {error}"]
     print("VERDICT: FAIL" if errors else "VERDICT: PASS (declared suite only)")
     for error in errors:

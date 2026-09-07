@@ -1,4 +1,7 @@
+import contextlib
+import io
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -81,6 +84,19 @@ class EvidenceContract(unittest.TestCase):
 
     def test_missing_required_counter_fails(self):
         del self.samples[0]["counters"]["sessions"]
+        self.assertTrue(self.errors())
+
+    def test_malformed_manifest_file_returns_controlled_failure(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "manifest.json").write_text("{}")
+            (root / "samples.jsonl").write_text("{}\n")
+            (root / "completion.json").write_text("{}")
+            with contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(self.evidence.verdict(root), 1)
+
+    def test_baseline_outstanding_queue_snapshot_must_be_consistent(self):
+        self.samples[0]["counters"]["queue_progress.texture_pending"] = 1
         self.assertTrue(self.errors())
 
     def test_truncated_census_fails(self):
