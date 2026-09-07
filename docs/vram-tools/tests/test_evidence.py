@@ -100,17 +100,54 @@ class EvidenceContract(unittest.TestCase):
         for index, sample in enumerate(self.samples):
             sample["counters"]["raw.queued_texture"] = index + 1
             sample["counters"]["raw.drained_texture"] = index
+            sample["counters"].update(
+                {
+                    "queue_progress.texture_submitted": index + 1,
+                    "queue_progress.texture_oldest": index + 1,
+                    "queue_progress.texture_pending": 1,
+                }
+            )
         self.assertEqual(self.errors(), [])
 
     def test_queue_watermark_detects_undrained_old_items(self):
         self.samples[0]["counters"]["raw.queued_texture"] = 3
+        self.samples[0]["counters"]["queue_progress.texture_submitted"] = 3
+        for sample in self.samples[1:]:
+            sample["counters"].update(
+                {
+                    "queue_progress.texture_submitted": 3,
+                    "queue_progress.texture_oldest": 1,
+                    "queue_progress.texture_pending": 1,
+                }
+            )
+        self.assertTrue(self.errors())
+
+    def test_new_completions_cannot_mask_stuck_earliest_item(self):
+        for index, sample in enumerate(self.samples):
+            sample["counters"].update(
+                {
+                    "raw.queued_texture": index + 10,
+                    "raw.drained_texture": index + 9,
+                    "queue_progress.texture_submitted": index + 10,
+                    "queue_progress.texture_oldest": 1,
+                    "queue_progress.texture_pending": 1,
+                }
+            )
         self.assertTrue(self.errors())
 
     def test_retired_context_discards_pass_watermark(self):
         self.samples[0]["counters"]["raw.queued_texture"] = 2
+        self.samples[0]["counters"].update(
+            {
+                "queue_progress.texture_submitted": 2,
+                "queue_progress.texture_oldest": 1,
+                "queue_progress.texture_pending": 2,
+            }
+        )
         for sample in self.samples[1:]:
             sample["counters"]["raw.queued_texture"] = 2
             sample["counters"]["raw.discarded_texture"] = 2
+            sample["counters"]["queue_progress.texture_submitted"] = 2
         self.assertEqual(self.errors(), [])
 
     def test_empty_checks_fail(self):
@@ -150,6 +187,14 @@ class EvidenceContract(unittest.TestCase):
     def test_post_phase_queue_must_drain_by_settle(self):
         self.samples[2]["counters"]["raw.queued_texture"] = 5
         self.samples[3]["counters"]["raw.queued_texture"] = 5
+        self.samples[2]["counters"]["queue_progress.texture_submitted"] = 5
+        self.samples[3]["counters"].update(
+            {
+                "queue_progress.texture_submitted": 5,
+                "queue_progress.texture_oldest": 1,
+                "queue_progress.texture_pending": 1,
+            }
+        )
         self.assertTrue(self.errors())
 
 

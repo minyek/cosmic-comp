@@ -46,6 +46,11 @@ REQUIRED = (
         for queue in QUEUES
         for operation in ("queued", "drained", "discarded")
     }
+    | {
+        f"queue_progress.{queue}_{field}"
+        for queue in QUEUES
+        for field in ("submitted", "oldest", "pending")
+    }
 )
 KINDS = {"delta", "peak_above", "return", "equals", "journal", "generations", "pointer"}
 
@@ -142,9 +147,9 @@ def check_phase(phase, span):
     if last["minimized_windows"] != first["minimized_windows"]:
         errors.append("minimized windows did not return to phase baseline")
     for queue in QUEUES:
-        watermark = first[f"raw.queued_{queue}"]
-        drained = last[f"raw.drained_{queue}"] + last[f"raw.discarded_{queue}"]
-        if drained < watermark:
+        watermark = first[f"queue_progress.{queue}_submitted"]
+        oldest = last[f"queue_progress.{queue}_oldest"]
+        if oldest and oldest <= watermark:
             errors.append(
                 f"{queue} cleanup has not passed baseline enqueue watermark {watermark}"
             )
@@ -193,20 +198,24 @@ def _validate(manifest, samples, completion):
         return errors
     for earlier, later in pairwise(samples):
         for queue in QUEUES:
-            queued = f"raw.queued_{queue}"
-            drained = f"raw.drained_{queue}"
-            discarded = f"raw.discarded_{queue}"
+            submitted = f"queue_progress.{queue}_submitted"
+            oldest = later["counters"][f"queue_progress.{queue}_oldest"]
+            pending = later["counters"][f"queue_progress.{queue}_pending"]
+            if bool(oldest) != bool(pending) or oldest > later["counters"][submitted]:
+                errors.append(
+                    f"{later['label']}: inconsistent {queue} outstanding queue snapshot"
+                )
             if (
                 later["counters"]["retest.session_active"]
-                and later["counters"][drained] + later["counters"][discarded]
-                < earlier["counters"][queued]
+                and oldest
+                and oldest <= earlier["counters"][submitted]
             ):
                 errors.append(
                     f"{later['label']}: {queue} has not passed previous enqueue watermark"
                 )
             if any(
                 later["counters"][key] < earlier["counters"][key]
-                for key in (queued, drained, discarded)
+                for key in (submitted,)
             ):
                 errors.append(f"{later['label']}: {queue} cumulative counter decreased")
     previous_end = -1

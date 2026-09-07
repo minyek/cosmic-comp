@@ -49,6 +49,8 @@ def plan(mode, rounds):
         "fullscreen": [peak("minimized_windows"), retained("minimized_windows")],
         "activation": [
             delta("retest.client_disconnects"),
+            delta("retest.wayland_activations_pruned"),
+            peak("retest.pending_wayland_activations"),
             retained("pending_activations"),
             retained("retest.pending_wayland_activations"),
             retained("retest.pending_x11_activations"),
@@ -65,9 +67,11 @@ def plan(mode, rounds):
         "constraints": [
             delta("retest.pointer_hint_applied"),
             delta("retest.pointer_hint_rejected"),
+            delta("retest.pointer_constraint_leaves"),
             {"kind": "pointer", "name": "matching", "mode": "hint"},
             {"kind": "pointer", "name": "different-focus", "mode": "unchanged"},
             {"kind": "pointer", "name": "leave", "mode": "unchanged"},
+            {"kind": "pointer", "name": "leave-event", "mode": "unchanged"},
         ],
         "recording": [peak("sessions"), retained("sessions")],
     }
@@ -94,6 +98,12 @@ def plan(mode, rounds):
         "physical-disconnect": [
             delta("retest.output_removals"),
             delta("retest.client_gpu_removals"),
+            peak("retest.gpu_clients"),
+        ],
+        "multi-gpu": [
+            {"kind": "peak_above", "counter": "retest.gpu_clients", "minimum": 2},
+            delta("retest.client_gpu_removals", 2),
+            retained("retest.gpu_clients"),
         ],
         "vt-deactivate": [
             delta("retest.cleanup_inactive"),
@@ -103,12 +113,24 @@ def plan(mode, rounds):
             peak("retest.lock_surfaces"),
             delta("retest.lock_surface_removals"),
         ],
+        "locked-disconnect": [
+            peak("retest.lock_surfaces"),
+            delta("retest.output_removals"),
+            delta("retest.lock_surface_removals"),
+        ],
     }
     catalog = {"normal": normal, "fault": fault, "hardware": hardware}
     checks = catalog.get(mode)
     if checks is None:
         checks = {mode: (normal | fault | hardware)[mode]}
     return [{"name": name, "checks": values} for name, values in checks.items()]
+
+
+def mode_for(selection):
+    for mode in ("normal", "fault", "hardware"):
+        if selection == mode or selection in {phase["name"] for phase in plan(mode, 1)}:
+            return mode
+    raise ValueError(f"unknown suite or phase {selection}")
 
 
 def run(*command, **kwargs):
@@ -127,6 +149,7 @@ class Client:
         self.events = queue.Queue()
         self.pending = []
         self.pointer_local = None
+        self.outputs = set()
         self.evidence = evidence
         self.reader = threading.Thread(target=self.read, daemon=True)
         self.reader.start()
@@ -141,6 +164,10 @@ class Client:
                     self.pointer_local = message["detail"]
                 elif message["event"] == "pointer-leave":
                     self.pointer_local = None
+                elif message["event"] == "output-enter":
+                    self.outputs.add(message["detail"]["name"])
+                elif message["event"] == "output-leave":
+                    self.outputs.discard(message["detail"]["name"])
                 self.events.put(message)
             except ValueError:
                 self.events.put({"event": "error", "detail": line})
@@ -170,10 +197,20 @@ class Client:
             self.pending.append(message)
         raise TimeoutError(f"client event absent: {event}")
 
-    def send(self, command):
-        self.process.stdin.write(json.dumps({"command": command}) + "\n")
+    def send(self, command, **parameters):
+        self.process.stdin.write(json.dumps({"command": command, **parameters}) + "\n")
         self.process.stdin.flush()
         return self.wait("acknowledged", command)
+
+    def wait_state(self, *required):
+        while True:
+            message = self.wait("managed-state")
+            if set(required) <= set(message["detail"]["states"]):
+                return message
+
+    def wait_output(self, name):
+        while name not in self.outputs:
+            self.wait("output-enter")
 
     def close(self):
         if self.process.poll() is None:
@@ -291,15 +328,23 @@ class Driver:
             if self.phase in ("minimize", "sticky", "fullscreen"):
                 if self.phase == "sticky":
                     client.send("sticky")
+                    client.wait_state(4)
                 elif self.phase == "fullscreen":
                     client.send("fullscreen")
+                    client.wait_state(3)
                 client.send("minimize")
+                client.wait_state(
+                    1, 4
+                ) if self.phase == "sticky" else client.wait_state(1)
                 time.sleep(2)
                 self.mark("minimized-held")
             elif self.phase == "activation":
-                client.send("activate-token")
-                client.wait("activation-token-done")
+                client.wait("keyboard-enter")
+                client.send("pending-activate")
+                client.wait("pending-activation-submitted")
+                client.wait("acknowledged", "pending-activate-ready")
                 self.mark("activation-held")
+                client.send("pending-destroy")
             elif self.phase == "cursor":
                 self.key(125, 13)
                 try:
@@ -366,9 +411,27 @@ class Driver:
         run("ydotool", "mousemove", "-x", "1", "-y", "0")
         client.wait("pointer-enter")
         lock_with_hint()
+        self.mark("leave-trigger-before")
         self.key(125, 17)
         try:
             client.wait("pointer-leave")
+            self.mark("leave-trigger-after")
+            transitions["leave-event"] = {
+                "kind": "unchanged",
+                "before": "leave-trigger-before",
+                "after": "leave-trigger-after",
+                "seat": 0,
+            }
+            from pointer_evidence import validate_transition
+
+            samples = [
+                json.loads(line)
+                for line in (self.root / "samples.jsonl").read_text().splitlines()
+            ]
+            errors = validate_transition(transitions["leave-event"], samples)
+            if errors:
+                raise ValueError("; ".join(errors))
+            write_json(self.root / "pointer-transitions.json", transitions)
             observe_unlock("leave", "unchanged")
         finally:
             self.key(1)
@@ -377,9 +440,67 @@ class Driver:
         if not sys.stdin.isatty():
             raise ValueError("hardware suite requires a present operator and terminal")
         if self.phase == "physical-disconnect":
-            input("Physically disconnect the secondary output, then press Enter: ")
-            self.mark("disconnected-held")
-            input("Reconnect the output, then press Enter: ")
+            if not self.args.output:
+                raise ValueError("physical disconnect requires --output")
+            with self.client() as client:
+                client.send("fullscreen-target", output=self.args.output)
+                client.wait_output(self.args.output)
+                time.sleep(2)
+                self.mark("owned-target-held")
+                input(f"Physically disconnect {self.args.output}, then press Enter: ")
+                self.mark("disconnected-held")
+                client.send("destroy")
+                client.process.wait(timeout=5)
+                self.mark("disconnected-client-destroyed")
+                input(f"Reconnect {self.args.output}, then press Enter: ")
+        elif self.phase == "multi-gpu":
+            targets = (self.args.output, self.args.other_output)
+            if None in targets or len(set(targets)) != 2:
+                raise ValueError(
+                    "multi-gpu requires distinct --output and --other-output"
+                )
+            devices = set()
+            for target in targets:
+                paths = list(Path("/sys/class/drm").glob(f"card*-{target}/status"))
+                if len(paths) != 1 or paths[0].read_text().strip() != "connected":
+                    raise ValueError(f"output {target} is absent or ambiguous")
+                card = paths[0].parent.name.split("-", 1)[0]
+                devices.add(
+                    (Path("/sys/class/drm") / card / "device").resolve(strict=True)
+                )
+            if len(devices) != 2:
+                raise ValueError(
+                    "selected outputs do not belong to distinct DRM devices"
+                )
+            with self.client() as client:
+                for target in targets:
+                    client.send("fullscreen-target", output=target)
+                    client.wait_output(target)
+                    time.sleep(2)
+                    self.mark("rendered-" + target)
+        elif self.phase == "locked-disconnect":
+            print(
+                "Lock now. Locked baseline census in 15 seconds; keep locked until all reconnect checkpoints finish.",
+                flush=True,
+            )
+            time.sleep(15)
+            self.mark("locked-before-disconnect")
+            self.require_locked()
+            print(
+                "Physically unplug the secondary output now. Disconnected census in 15 seconds.",
+                flush=True,
+            )
+            time.sleep(15)
+            self.mark("locked-disconnected-held")
+            self.require_locked()
+            print(
+                "Reconnect the secondary output now. Reconnected census in 15 seconds; remain locked.",
+                flush=True,
+            )
+            time.sleep(15)
+            self.mark("locked-reconnected-held")
+            self.require_locked()
+            input("Unlock the session, then press Enter: ")
         elif self.phase == "vt-deactivate":
             with self.client() as client:
                 print(
@@ -420,6 +541,13 @@ class Driver:
             self.outputs()
             input("Unlock the session, then press Enter: ")
 
+    def require_locked(self):
+        sample = json.loads((self.root / "samples.jsonl").read_text().splitlines()[-1])
+        if sample["counters"]["retest.lock_active"] != 1:
+            raise ValueError(
+                "required checkpoint was not captured while session locked"
+            )
+
     def workload(self):
         phase = self.phase
         if phase in (
@@ -437,7 +565,13 @@ class Driver:
                 self.outputs()
         elif phase == "recording":
             self.record()
-        elif phase in ("physical-disconnect", "vt-deactivate", "session-lock"):
+        elif phase in (
+            "physical-disconnect",
+            "multi-gpu",
+            "vt-deactivate",
+            "session-lock",
+            "locked-disconnect",
+        ):
             self.assisted()
         elif phase in ("cleanup", "config", "scanout"):
             self.mark("armed", "arm-" + phase)
@@ -486,11 +620,7 @@ class Driver:
     def execute(self):
         session = json.loads((self.root / "session.json").read_text())
         phases = plan(self.args.suite, self.args.rounds)
-        mode = (
-            self.args.suite
-            if self.args.suite in ("normal", "fault", "hardware")
-            else "normal"
-        )
+        mode = mode_for(self.args.suite)
         manifest = dict(session, schema=1, mode=mode, phases=phases)
         validate_manifest(manifest)
         if (self.root / "manifest.json").exists():
@@ -503,7 +633,11 @@ class Driver:
         for phase in phases:
             self.phase = phase["name"]
             self.mark("pre-" + self.phase)
-            self.workload()
+            try:
+                self.workload()
+            finally:
+                if mode == "fault":
+                    self.mark("disarmed", "disarm")
             time.sleep(5)
             self.mark("post-" + self.phase)
         time.sleep(self.args.settle)
@@ -526,6 +660,7 @@ def main():
     parser.add_argument("--rounds", type=int, default=8)
     parser.add_argument("--settle", type=int, default=90)
     parser.add_argument("--output", default=os.environ.get("TARGET_OUTPUT"))
+    parser.add_argument("--other-output")
     parser.add_argument(
         "--client", type=Path, default=TOOLS / "clients/target/debug/vram-retest-client"
     )

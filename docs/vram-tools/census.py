@@ -44,7 +44,8 @@ def parse_block(lines):
             if gens:
                 live = [int(g) for g in gens.group(1).split(",") if g != "-"]
                 if live:
-                    generations[m.group(1)] = max(live)
+                    scope = re.sub(r"@ThreadId\(\d+\)$", "", m.group(1))
+                    generations[scope] = max(live)
             continue
         if 'output "' in line:
             scope = re.search(r'output "([^"]+)"', line).group(1)
@@ -58,6 +59,10 @@ def parse_block(lines):
         if "retest counters:" in line or "retest state:" in line:
             for key, val in FIELD_RE.findall(line):
                 counters[f"retest.{key}"] = int(val)
+            continue
+        if "GL queue progress:" in line:
+            for key, val in FIELD_RE.findall(line):
+                counters[f"queue_progress.{key}"] = int(val)
             continue
         if "GL live objects" in line or "GL cleanup queue depth" in line:
             prefix = "live" if "live objects" in line else "queue"

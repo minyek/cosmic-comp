@@ -15,6 +15,34 @@ from pathlib import Path
 from census import censuses
 
 
+class FaultArms:
+    def __init__(self, directory):
+        self.directory = directory
+        self.tokens = {}
+
+    def __enter__(self):
+        return self
+
+    def arm(self, name, token):
+        path = self.directory / name
+        with path.open("x") as output:
+            output.write(token)
+            inode = os.fstat(output.fileno()).st_ino
+        self.tokens[path] = (inode, token)
+
+    def clear(self):
+        for path, (inode, token) in self.tokens.items():
+            try:
+                if path.stat().st_ino == inode and path.read_text() == token:
+                    path.unlink()
+            except FileNotFoundError:
+                pass
+        self.tokens.clear()
+
+    def __exit__(self, kind, value, traceback):
+        self.clear()
+
+
 def write_json(path, value):
     temporary = path.with_suffix(".tmp")
     temporary.write_text(json.dumps(value, sort_keys=True) + "\n")
@@ -162,62 +190,74 @@ def serve(args):
     journal(args.pid, cursor, 0)
     write_json(root / "session.json", session)
     print(f"Session ready: {root} run={session['run_id']}", flush=True)
-    seen = set()
-    declared_manifest = None
-    while True:
-        stat = Path(f"/proc/{args.pid}/stat").read_text().rsplit(")", 1)[1].split()
-        if stat[19] != session["start_ticks"]:
-            raise ValueError("running process identity changed")
-        for path in sorted((root / "requests").glob("*.json")):
-            if path.name in seen:
-                continue
-            seen.add(path.name)
-            message = json.loads(path.read_text())
-            reply = dict(message, status="ok")
-            try:
-                if (
-                    message["run_id"] != session["run_id"]
-                    or path.stem != message["request_id"]
-                ):
-                    raise ValueError("request identity mismatch")
-                if message["verb"] == "stop":
-                    write_json(root / "acks" / path.name, reply)
-                    return
-                manifest = json.loads((root / "manifest.json").read_text())
-                from evidence import validate_manifest
+    with FaultArms(control) as arms:
+        seen = set()
+        declared_manifest = None
+        while True:
+            stat = Path(f"/proc/{args.pid}/stat").read_text().rsplit(")", 1)[1].split()
+            if stat[19] != session["start_ticks"]:
+                raise ValueError("running process identity changed")
+            for path in sorted((root / "requests").glob("*.json")):
+                if path.name in seen:
+                    continue
+                seen.add(path.name)
+                message = json.loads(path.read_text())
+                reply = dict(message, status="ok")
+                try:
+                    if (
+                        message["run_id"] != session["run_id"]
+                        or path.stem != message["request_id"]
+                    ):
+                        raise ValueError("request identity mismatch")
+                    if message["verb"] == "stop":
+                        write_json(root / "acks" / path.name, reply)
+                        return
+                    manifest = json.loads((root / "manifest.json").read_text())
+                    from evidence import validate_manifest
 
-                validate_manifest(manifest)
-                if declared_manifest is None:
-                    declared_manifest = manifest
-                elif manifest != declared_manifest:
-                    raise ValueError("manifest changed after execution began")
-                if any(manifest[key] != value for key, value in session.items()):
-                    raise ValueError("manifest identity mismatch")
-                if message["phase"] not in {
-                    phase["name"] for phase in manifest["phases"]
-                }:
-                    raise ValueError("phase not declared before execution")
-                if message["verb"] in ("census", "snapshot"):
-                    collect(root, session, message, cursor, args.timeout)
-                elif message["verb"] in (
-                    "arm-cleanup",
-                    "arm-config",
-                    "arm-scanout",
-                    "arm-capture-workspace",
-                    "arm-capture-toplevel",
-                ):
-                    if manifest["mode"] != "fault":
-                        raise ValueError("fault arming outside fault suite")
-                    (control / message["verb"]).touch(exist_ok=False)
-                else:
-                    raise ValueError("unknown request verb")
-            except (OSError, ValueError, KeyError, subprocess.SubprocessError) as error:
-                reply.update(status="error", error=str(error))
-            write_json(root / "acks" / path.name, reply)
-        time.sleep(0.1)
+                    validate_manifest(manifest)
+                    if declared_manifest is None:
+                        declared_manifest = manifest
+                    elif manifest != declared_manifest:
+                        raise ValueError("manifest changed after execution began")
+                    if any(manifest[key] != value for key, value in session.items()):
+                        raise ValueError("manifest identity mismatch")
+                    if message["phase"] not in {
+                        phase["name"] for phase in manifest["phases"]
+                    }:
+                        raise ValueError("phase not declared before execution")
+                    if message["verb"] in ("census", "snapshot"):
+                        collect(root, session, message, cursor, args.timeout)
+                    elif message["verb"] in (
+                        "arm-cleanup",
+                        "arm-config",
+                        "arm-scanout",
+                        "arm-capture-workspace",
+                        "arm-capture-toplevel",
+                    ):
+                        if manifest["mode"] != "fault":
+                            raise ValueError("fault arming outside fault suite")
+                        arms.arm(message["verb"], message["request_id"])
+                    elif message["verb"] == "disarm":
+                        arms.clear()
+                    else:
+                        raise ValueError("unknown request verb")
+                except (
+                    OSError,
+                    ValueError,
+                    KeyError,
+                    subprocess.SubprocessError,
+                ) as error:
+                    reply.update(status="error", error=str(error))
+                write_json(root / "acks" / path.name, reply)
+            time.sleep(0.1)
 
 
 def main():
+    def interrupted(signum, frame):
+        raise KeyboardInterrupt
+
+    signal.signal(signal.SIGTERM, interrupted)
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
     client = commands.add_parser("request")

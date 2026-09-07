@@ -1,5 +1,6 @@
 import importlib
 import os
+import queue
 import subprocess
 import sys
 import tempfile
@@ -12,6 +13,35 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 
 class Suites(unittest.TestCase):
+    def test_managed_state_wait_rejects_earlier_unminimized_state(self):
+        suite = importlib.import_module("suite")
+        client = suite.Client.__new__(suite.Client)
+        client.events = queue.Queue()
+        client.pending = [
+            {"event": "managed-state", "detail": {"states": [2]}},
+            {"event": "managed-state", "detail": {"states": [1, 4]}},
+        ]
+        self.assertEqual(client.wait_state(1, 4)["detail"]["states"], [1, 4])
+
+    def test_pointer_leave_event_has_its_own_required_coordinate_check(self):
+        suite = importlib.import_module("suite")
+        phase = next(
+            phase for phase in suite.plan("normal", 1) if phase["name"] == "constraints"
+        )
+        self.assertIn(
+            {"kind": "pointer", "name": "leave-event", "mode": "unchanged"},
+            phase["checks"],
+        )
+
+    def test_standalone_fault_phase_uses_fault_mode(self):
+        suite = importlib.import_module("suite")
+        self.assertEqual(suite.mode_for("config"), "fault")
+
+    def test_locked_physical_disconnect_is_a_distinct_phase(self):
+        suite = importlib.import_module("suite")
+        phases = {phase["name"] for phase in suite.plan("hardware", 2)}
+        self.assertIn("locked-disconnect", phases)
+
     def test_failed_output_change_restores_saved_configuration(self):
         suite = importlib.import_module("suite")
         with tempfile.TemporaryDirectory() as directory:
@@ -68,7 +98,13 @@ class Suites(unittest.TestCase):
         suite = importlib.import_module("suite")
         self.assertEqual(
             {p["name"] for p in suite.plan("hardware", 2)},
-            {"physical-disconnect", "vt-deactivate", "session-lock"},
+            {
+                "physical-disconnect",
+                "multi-gpu",
+                "vt-deactivate",
+                "session-lock",
+                "locked-disconnect",
+            },
         )
 
 

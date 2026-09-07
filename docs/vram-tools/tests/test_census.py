@@ -14,6 +14,20 @@ spec.loader.exec_module(census)
 
 
 class HistoricalFalsePasses(unittest.TestCase):
+    def test_queue_progress_parser(self):
+        parsed = census.parse_block(
+            [
+                "GL queue progress: texture_submitted=12 texture_oldest=5 texture_pending=2"
+            ]
+        )
+        self.assertEqual(parsed["queue_progress.texture_oldest"], 5)
+
+    def test_generation_names_survive_surface_thread_replacement(self):
+        parsed = census.parse_block(
+            ["renderer cache detail compositor[DP-2@ThreadId(17)] swapchain=[1,2,-]"]
+        )
+        self.assertEqual(parsed["_generations"], {"DP-2": 2})
+
     def test_dead_cache_entries_are_summed(self):
         parsed = census.parse_block(
             [

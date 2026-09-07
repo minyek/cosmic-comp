@@ -24,12 +24,19 @@ bash docs/vram-tools/drive.sh normal --output DP-2
 python3 docs/vram-tools/census.py verdict "$CTL"
 ```
 
-Use `fault` or `hardware` in separate fresh sessions. `all` aliases `normal`;
+Use `fault` or `hardware` in separate fresh sessions. Hardware also requires
+`--other-output` on another physical GPU for the `multi-gpu` phase. The driver
+checks distinct DRM device paths, requests the owned helper fullscreen on each
+named output, waits for surface/output membership and requires two GPU client
+references to appear and be retired. Missing multi-GPU hardware is incomplete.
+`all` aliases `normal`;
 `faultall` aliases `fault`. Individual phase names are also accepted, with their
 own declared scope. `--rounds`, `--settle`, `--client`, and `--directory` configure
 the driver. Hardware requires an operator and a terminal. It asks for physical
 disconnect/reconnect, VT deactivation/reactivation, and a locked-session output
-cycle. Missing hardware, tools, protocol events, counters, or acknowledgements
+cycle. A separate `locked-disconnect` phase takes locked-state censuses before
+physical unplug, while disconnected, and after reconnect; each step has a
+15-second operator window. Missing hardware, tools, protocol events, counters, or acknowledgements
 leave an incomplete run and return nonzero.
 
 Normal rounds include owned protocol clients, minimize/sticky/fullscreen teardown,
@@ -50,12 +57,19 @@ final snapshot acknowledge successfully. The verifier rejects absent or malforme
 contracts, undeclared checks, missing/duplicate/out-of-order boundaries, mismatched
 identities, incomplete counters and unobserved workload activity.
 
-Queue liveness uses cumulative enqueue watermarks against drained plus discarded
-items, not coincidentally equal queue depths. Context-retirement discard deltas are
+Queue liveness requires the exact oldest outstanding enqueue ticket to advance
+past the earlier submitted-ticket watermark, or the outstanding set to become
+empty. Aggregate completion counts cannot establish this because later work on
+another renderer can complete while the oldest work remains stuck. Context-retirement discard deltas are
 reported separately because they do not establish explicit GL deletion. Current
 expected surface threads come from the census at each checkpoint. Minimized state
 must return to each phase's baseline. Generic idle GL churn does not prove an
 otherwise unobserved protocol action.
+
+Runtime fault requests create owned tokens. Service teardown and explicit driver
+disarm requests remove only those tokens whose inode and request UUID still match;
+unrelated or replacement arm files are preserved. Single fault phases use the
+same fault-mode catalog as the full fault suite.
 
 ## Validation and limits
 
