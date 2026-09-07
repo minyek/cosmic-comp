@@ -14,6 +14,15 @@ spec.loader.exec_module(census)
 
 
 class HistoricalFalsePasses(unittest.TestCase):
+    def test_pointer_geometry_preserves_signed_fractional_scale(self):
+        parsed = census.parse_block(
+            [
+                "retest pointer geometry: seat=0 focus_origin_x=-100.5 focus_origin_y=20.25 client_scale=1.25"
+            ]
+        )
+        self.assertEqual(parsed["retest.pointer.0.focus_origin_x"], -100.5)
+        self.assertEqual(parsed["retest.pointer.0.client_scale"], 1.25)
+
     def test_queue_progress_parser(self):
         parsed = census.parse_block(
             [

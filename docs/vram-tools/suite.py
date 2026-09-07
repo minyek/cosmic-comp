@@ -68,6 +68,28 @@ def plan(mode, rounds):
             delta("retest.cursor_magnified_evicted"),
             peak("retest.cursor_magnified"),
             {"kind": "equals", "counter": "retest.cursor_magnified", "value": 0},
+            {
+                "kind": "interval_delta",
+                "counter": "retest.cursor_shape_changes",
+                "before": "same-shape-before",
+                "after": "same-shape-after",
+                "minimum": 0,
+                "maximum": 0,
+            },
+            {
+                "kind": "interval_delta",
+                "counter": "retest.cursor_cache_hits",
+                "before": "same-shape-before",
+                "after": "same-shape-after",
+                "minimum": 1,
+            },
+        ],
+        "cursor-shake": [
+            peak("retest.cursor_shaking"),
+            peak("retest.cursor_magnified"),
+            delta("retest.cursor_magnified_evicted"),
+            {"kind": "equals", "counter": "retest.cursor_shaking", "value": 0},
+            {"kind": "equals", "counter": "retest.cursor_magnified", "value": 0},
         ],
         "constraints": [
             delta("retest.pointer_hint_applied"),
@@ -392,7 +414,7 @@ class Driver:
 
     def protocol(self):
         with self.client() as client:
-            if self.phase in ("cursor", "constraints"):
+            if self.phase in ("cursor", "cursor-shake", "constraints"):
                 client.send("fullscreen")
                 run("ydotool", "mousemove", "-x", "1", "-y", "0")
                 client.wait("pointer-enter")
@@ -427,6 +449,14 @@ class Driver:
                     client.send("x11-destroy")
                 self.mark("x11-burst-complete")
             elif self.phase == "cursor":
+                client.send("shape-default")
+                time.sleep(0.2)
+                self.mark("same-shape-before")
+                for _ in range(self.args.rounds):
+                    client.send("shape-default")
+                    run("ydotool", "mousemove", "-x", "1", "-y", "0")
+                    time.sleep(0.2)
+                self.mark("same-shape-after")
                 self.key(125, 13)
                 try:
                     for _ in range(self.args.rounds):
@@ -441,6 +471,17 @@ class Driver:
                 run("ydotool", "mousemove", "-x", "1", "-y", "0")
                 time.sleep(1)
                 self.mark("cursor-expired")
+            elif self.phase == "cursor-shake":
+                run(
+                    "bash",
+                    "-euc",
+                    "for ((i=0; i<12; i++)); do ydotool mousemove -x 200 -y 0; ydotool mousemove -x -200 -y 0; done",
+                )
+                self.mark("shake-held")
+                time.sleep(15)
+                run("ydotool", "mousemove", "-x", "1", "-y", "0")
+                time.sleep(0.3)
+                self.mark("shake-expired")
             elif self.phase == "constraints":
                 self.constraints(client)
             else:
@@ -459,11 +500,9 @@ class Driver:
             self.mark(before)
             record = {"kind": mode, "before": before, "after": after, "seat": 0}
             if mode == "hint":
-                if client.pointer_local is None:
-                    raise ValueError(
-                        "matching hint has no observed local pointer coordinates"
-                    )
-                record.update(local=dict(client.pointer_local), hint={"x": 80, "y": 80})
+                record["hint"] = {"x": 80, "y": 80}
+                if client.pointer_local is not None:
+                    record["wire_local"] = dict(client.pointer_local)
             client.send("unlock")
             time.sleep(0.5)
             self.mark(after)
@@ -654,6 +693,7 @@ class Driver:
             "activation",
             "activation-x11",
             "cursor",
+            "cursor-shake",
             "constraints",
         ):
             self.protocol()

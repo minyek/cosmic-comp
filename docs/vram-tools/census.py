@@ -31,6 +31,13 @@ def parse_block(lines):
             counters[f"retest.pointer.{pointer[1]}.x"] = float(pointer[2])
             counters[f"retest.pointer.{pointer[1]}.y"] = float(pointer[3])
             continue
+        geometry = re.search(r"retest pointer geometry: seat=(\d+)", line)
+        if geometry:
+            for key, value in re.findall(
+                r"(focus_origin_x|focus_origin_y|client_scale)=([-+\d.eE]+)", line
+            ):
+                counters[f"retest.pointer.{geometry[1]}.{key}"] = float(value)
+            continue
         # alive/dead ride on a "renderer cache detail" line, which is otherwise
         # skipped; dead entries are the strongest single leak signal there is.
         if "renderer cache detail" in line and " alive=" in line:

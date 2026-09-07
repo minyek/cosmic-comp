@@ -99,6 +99,37 @@ class EvidenceContract(unittest.TestCase):
         self.samples[0]["counters"]["queue_progress.texture_pending"] = 1
         self.assertTrue(self.errors())
 
+    def test_interval_delta_checks_only_its_named_checkpoints(self):
+        self.manifest["phases"][0]["checks"].append(
+            {
+                "kind": "interval_delta",
+                "counter": "shape_changes",
+                "before": "held",
+                "after": "post-minimize",
+                "minimum": 0,
+                "maximum": 0,
+            }
+        )
+        for index, sample in enumerate(self.samples):
+            sample["counters"]["shape_changes"] = int(index > 0)
+        self.assertEqual(self.errors(), [])
+        self.samples[2]["counters"]["shape_changes"] = 2
+        self.assertTrue(self.errors())
+
+    def test_interval_delta_cannot_borrow_activity_from_another_interval(self):
+        self.manifest["phases"][0]["checks"].append(
+            {
+                "kind": "interval_delta",
+                "counter": "cache_hits",
+                "before": "held",
+                "after": "post-minimize",
+                "minimum": 1,
+            }
+        )
+        for index, sample in enumerate(self.samples):
+            sample["counters"]["cache_hits"] = int(index > 0)
+        self.assertTrue(self.errors())
+
     def test_truncated_census_fails(self):
         self.samples[1]["complete"] = False
         self.assertTrue(self.errors())

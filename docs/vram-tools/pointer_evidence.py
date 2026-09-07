@@ -27,9 +27,13 @@ def validate_transition(record, samples):
         if record["kind"] == "unchanged":
             expected = before
         elif record["kind"] == "hint":
+            geometry = samples[before_index]["counters"]
+            scale = geometry[prefix + "client_scale"]
+            if not math.isfinite(scale) or scale <= 0:
+                raise ValueError("invalid observed client scale")
             expected = tuple(
-                before[index] - record["local"][axis] + record["hint"][axis]
-                for index, axis in enumerate(("x", "y"))
+                geometry[prefix + "focus_origin_" + axis] + record["hint"][axis] / scale
+                for axis in ("x", "y")
             )
         else:
             raise ValueError("unknown pointer transition kind")

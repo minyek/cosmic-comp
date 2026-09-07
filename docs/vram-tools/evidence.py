@@ -52,7 +52,16 @@ REQUIRED = (
         for field in ("submitted", "oldest", "pending")
     }
 )
-KINDS = {"delta", "peak_above", "return", "equals", "journal", "generations", "pointer"}
+KINDS = {
+    "delta",
+    "peak_above",
+    "return",
+    "equals",
+    "journal",
+    "generations",
+    "pointer",
+    "interval_delta",
+}
 
 
 def validate_manifest(manifest):
@@ -98,6 +107,18 @@ def validate_manifest(manifest):
                 raise ValueError("equals requires an integer value")
             if kind == "journal":
                 re.compile(check["pattern"])
+            if kind == "interval_delta":
+                if type(check.get("minimum")) is not int or check["minimum"] < 0:
+                    raise ValueError("interval delta requires a nonnegative minimum")
+                if "maximum" in check and (
+                    type(check["maximum"]) is not int
+                    or check["maximum"] < check["minimum"]
+                ):
+                    raise ValueError("interval delta maximum must be >= minimum")
+                if not check.get("before") or not check.get("after"):
+                    raise ValueError(
+                        "interval delta requires explicit checkpoint labels"
+                    )
 
 
 def check_phase(phase, span):
@@ -119,6 +140,24 @@ def check_phase(phase, span):
             errors.append(f"missing counter {key}")
             continue
         values = [sample["counters"][key] for sample in span] if key else []
+        if kind == "interval_delta":
+            labels = [sample["label"] for sample in span]
+            if labels.count(check["before"]) != 1 or labels.count(check["after"]) != 1:
+                errors.append(f"{key}: missing or duplicate interval checkpoints")
+                continue
+            start, end = labels.index(check["before"]), labels.index(check["after"])
+            if end <= start:
+                errors.append(f"{key}: unordered interval checkpoints")
+                continue
+            interval = values[start : end + 1]
+            change = interval[-1] - interval[0]
+            if (
+                any(b < a for a, b in pairwise(interval))
+                or change < check["minimum"]
+                or ("maximum" in check and change > check["maximum"])
+            ):
+                errors.append(f"{key}: interval delta {change} outside declared bounds")
+            continue
         if kind == "delta" and (
             any(b < a for a, b in pairwise(values))
             or values[-1] - values[0] < check["minimum"]

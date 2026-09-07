@@ -71,6 +71,15 @@ expected surface threads come from the census at each checkpoint. Minimized stat
 must return to each phase's baseline. Generic idle GL churn does not prove an
 otherwise unobserved protocol action.
 
+Matching cursor-hint targets use the focused surface's census geometry and client
+scale: `focus_origin + hint / client_scale`. Wire pointer coordinates are diagnostic
+only because their 24.8 precision differs from the compositor's global coordinates.
+No-warp checks require exact unchanged global coordinates. Same-shape cursor
+checkpoints require zero shape changes and advancing cache hits within that interval.
+The separate shake phase drives rapid alternating 200-pixel motions, requires
+observed shaking and magnification, then waits 15 seconds and triggers a render
+before checking expiration. Missing observations fail the phase.
+
 Runtime fault requests create owned tokens. Service teardown and explicit driver
 disarm requests remove only those tokens whose inode and request UUID still match;
 unrelated or replacement arm files are preserved. Single fault phases use the
