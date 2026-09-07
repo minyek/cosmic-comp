@@ -47,7 +47,7 @@ REQUIRED = (
         for operation in ("queued", "drained", "discarded")
     }
 )
-KINDS = {"delta", "peak_above", "return", "equals", "journal", "generations"}
+KINDS = {"delta", "peak_above", "return", "equals", "journal", "generations", "pointer"}
 
 
 def validate_manifest(manifest):
@@ -85,7 +85,9 @@ def validate_manifest(manifest):
                 type(check.get("minimum")) is not int or check["minimum"] <= 0
             ):
                 raise ValueError("activity minimum must be a positive integer")
-            if kind not in ("journal", "generations") and not check.get("counter"):
+            if kind not in ("journal", "generations", "pointer") and not check.get(
+                "counter"
+            ):
                 raise ValueError("check requires a counter")
             if kind == "equals" and type(check.get("value")) is not int:
                 raise ValueError("equals requires an integer value")
@@ -98,6 +100,16 @@ def check_phase(phase, span):
     first, last = span[0]["counters"], span[-1]["counters"]
     for check in phase["checks"]:
         kind, key = check["kind"], check.get("counter")
+        if kind == "pointer":
+            from pointer_evidence import validate_transition
+
+            records = span[-1].get("pointer_transitions", {})
+            record = records.get(check["name"])
+            if not record or record.get("kind") != check["mode"]:
+                errors.append(f"missing pointer transition {check['name']}")
+            else:
+                errors.extend(validate_transition(record, span))
+            continue
         if key and any(key not in sample["counters"] for sample in span):
             errors.append(f"missing counter {key}")
             continue
@@ -233,6 +245,15 @@ def verdict(directory):
             for line in (root / "samples.jsonl").read_text().splitlines()
         ]
         completion = json.loads((root / "completion.json").read_text())
+        if any(
+            check.get("kind") == "pointer"
+            for phase in manifest["phases"]
+            for check in phase["checks"]
+        ):
+            transitions = json.loads((root / "pointer-transitions.json").read_text())
+            for sample in samples:
+                if sample["label"] == "post-constraints":
+                    sample["pointer_transitions"] = transitions
         errors = validate(manifest, samples, completion)
         if samples:
             for queue in QUEUES:

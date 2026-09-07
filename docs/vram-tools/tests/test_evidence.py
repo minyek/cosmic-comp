@@ -121,6 +121,32 @@ class EvidenceContract(unittest.TestCase):
         self.samples[1]["request_id"] = self.samples[0]["request_id"]
         self.assertTrue(self.errors())
 
+    def test_pointer_check_requires_transition_evidence(self):
+        self.manifest["phases"][0]["checks"].append(
+            {"kind": "pointer", "name": "leave", "mode": "unchanged"}
+        )
+        self.assertTrue(self.errors())
+
+    def test_pointer_transition_is_checked_by_phase_verdict(self):
+        self.manifest["phases"][0]["checks"].append(
+            {"kind": "pointer", "name": "leave", "mode": "unchanged"}
+        )
+        for sample in self.samples:
+            sample["counters"].update(
+                {"retest.pointer.0.x": 30.5, "retest.pointer.0.y": 10.25}
+            )
+        self.samples[2]["pointer_transitions"] = {
+            "leave": {
+                "kind": "unchanged",
+                "before": "pre-minimize",
+                "after": "held",
+                "seat": 0,
+            }
+        }
+        self.assertEqual(self.errors(), [])
+        self.samples[1]["counters"]["retest.pointer.0.x"] = 31
+        self.assertTrue(self.errors())
+
     def test_post_phase_queue_must_drain_by_settle(self):
         self.samples[2]["counters"]["raw.queued_texture"] = 5
         self.samples[3]["counters"]["raw.queued_texture"] = 5

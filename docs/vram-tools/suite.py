@@ -65,6 +65,9 @@ def plan(mode, rounds):
         "constraints": [
             delta("retest.pointer_hint_applied"),
             delta("retest.pointer_hint_rejected"),
+            {"kind": "pointer", "name": "matching", "mode": "hint"},
+            {"kind": "pointer", "name": "different-focus", "mode": "unchanged"},
+            {"kind": "pointer", "name": "leave", "mode": "unchanged"},
         ],
         "recording": [peak("sessions"), retained("sessions")],
     }
@@ -123,6 +126,7 @@ class Client:
         )
         self.events = queue.Queue()
         self.pending = []
+        self.pointer_local = None
         self.evidence = evidence
         self.reader = threading.Thread(target=self.read, daemon=True)
         self.reader.start()
@@ -132,7 +136,12 @@ class Client:
             self.evidence.write(line)
             self.evidence.flush()
             try:
-                self.events.put(json.loads(line))
+                message = json.loads(line)
+                if message["event"] in ("pointer-enter", "pointer-motion"):
+                    self.pointer_local = message["detail"]
+                elif message["event"] == "pointer-leave":
+                    self.pointer_local = None
+                self.events.put(message)
             except ValueError:
                 self.events.put({"event": "error", "detail": line})
         self.events.put({"event": "error", "detail": "client exited"})
@@ -307,24 +316,62 @@ class Driver:
                 time.sleep(1)
                 self.mark("cursor-expired")
             elif self.phase == "constraints":
-                client.send("lock")
-                client.wait("locked")
-                client.send("hint")
-                client.send("unlock")
-                time.sleep(0.5)
-                self.mark("hint-applied")
-                client.send("lock")
-                client.wait("locked")
-                client.send("hint")
-                with self.client() as other:
-                    other.send("fullscreen")
-                    run("ydotool", "mousemove", "-x", "1", "-y", "0")
-                    other.wait("pointer-enter")
-                    client.send("unlock")
-                    time.sleep(0.5)
-                    self.mark("hint-rejected")
+                self.constraints(client)
             else:
                 self.mark("window-held")
+
+    def constraints(self, client):
+        transitions = {}
+
+        def lock_with_hint():
+            client.send("lock")
+            client.wait("locked")
+            client.send("hint")
+
+        def observe_unlock(name, mode):
+            before, after = name + "-before", name + "-after"
+            self.mark(before)
+            record = {"kind": mode, "before": before, "after": after, "seat": 0}
+            if mode == "hint":
+                if client.pointer_local is None:
+                    raise ValueError(
+                        "matching hint has no observed local pointer coordinates"
+                    )
+                record.update(local=dict(client.pointer_local), hint={"x": 80, "y": 80})
+            client.send("unlock")
+            time.sleep(0.5)
+            self.mark(after)
+            from pointer_evidence import validate_transition
+
+            samples = [
+                json.loads(line)
+                for line in (self.root / "samples.jsonl").read_text().splitlines()
+            ]
+            errors = validate_transition(record, samples)
+            if errors:
+                raise ValueError("; ".join(errors))
+            transitions[name] = record
+            write_json(self.root / "pointer-transitions.json", transitions)
+
+        lock_with_hint()
+        observe_unlock("matching", "hint")
+        lock_with_hint()
+        with self.client() as other:
+            other.send("fullscreen")
+            run("ydotool", "mousemove", "-x", "1", "-y", "0")
+            other.wait("pointer-enter")
+            client.wait("pointer-leave")
+            observe_unlock("different-focus", "unchanged")
+        client.send("focus")
+        run("ydotool", "mousemove", "-x", "1", "-y", "0")
+        client.wait("pointer-enter")
+        lock_with_hint()
+        self.key(125, 17)
+        try:
+            client.wait("pointer-leave")
+            observe_unlock("leave", "unchanged")
+        finally:
+            self.key(1)
 
     def assisted(self):
         if not sys.stdin.isatty():
