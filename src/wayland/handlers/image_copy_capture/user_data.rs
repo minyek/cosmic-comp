@@ -9,6 +9,7 @@ use smithay::{
         gles::{GlesRenderbuffer, GlesTexture},
     },
     output::Output,
+    utils::user_data::UserDataMap,
     wayland::image_copy_capture::{
         CursorSession, CursorSessionRef, Frame, FrameRef, Session, SessionRef,
     },
@@ -86,6 +87,28 @@ pub fn pending_frame_count(user_data: &UserDataMap) -> usize {
         .map(|p| p.lock().unwrap().len())
         .unwrap_or(0)
 }
+
+impl Drop for ImageCopySessions {
+    fn drop(&mut self) {
+        for session in self.sessions.drain(..) {
+            if let Some(sd) = session.user_data().get::<SessionData>() {
+                sd.lock().unwrap().offscreen = None;
+            }
+        }
+        for session in self.cursor_sessions.drain(..) {
+            if let Some(sd) = session.user_data().get::<SessionData>() {
+                sd.lock().unwrap().offscreen = None;
+            }
+        }
+    }
+}
+
+pub fn stop_all_capture_sessions(user_data: &UserDataMap) {
+    if let Some(data) = user_data.get::<ImageCopySessionsData>() {
+        *data.borrow_mut() = ImageCopySessions::default();
+    }
+}
+
 pub trait SessionHolder {
     fn add_session(&mut self, session: Session);
     fn remove_session(&mut self, session: &SessionRef);
@@ -115,12 +138,9 @@ impl SessionHolder for Output {
     }
 
     fn remove_session(&mut self, session: &SessionRef) {
-        self.user_data()
-            .get::<ImageCopySessionsData>()
-            .unwrap()
-            .borrow_mut()
-            .sessions
-            .retain(|s| s != session);
+        if let Some(sessions) = self.user_data().get::<ImageCopySessionsData>() {
+            sessions.borrow_mut().sessions.retain(|s| s != session);
+        }
     }
 
     fn sessions(&self) -> Vec<SessionRef> {
@@ -148,12 +168,12 @@ impl SessionHolder for Output {
     }
 
     fn remove_cursor_session(&mut self, session: &CursorSessionRef) {
-        self.user_data()
-            .get::<ImageCopySessionsData>()
-            .unwrap()
-            .borrow_mut()
-            .cursor_sessions
-            .retain(|s| s != session);
+        if let Some(sessions) = self.user_data().get::<ImageCopySessionsData>() {
+            sessions
+                .borrow_mut()
+                .cursor_sessions
+                .retain(|s| s != session);
+        }
     }
 
     fn cursor_sessions(&self) -> Vec<CursorSessionRef> {
@@ -239,12 +259,9 @@ impl SessionHolder for CosmicSurface {
     }
 
     fn remove_session(&mut self, session: &SessionRef) {
-        self.user_data()
-            .get::<ImageCopySessionsData>()
-            .unwrap()
-            .borrow_mut()
-            .sessions
-            .retain(|s| s != session);
+        if let Some(sessions) = self.user_data().get::<ImageCopySessionsData>() {
+            sessions.borrow_mut().sessions.retain(|s| s != session);
+        }
     }
     fn sessions(&self) -> Vec<SessionRef> {
         self.user_data()
@@ -271,12 +288,12 @@ impl SessionHolder for CosmicSurface {
     }
 
     fn remove_cursor_session(&mut self, session: &CursorSessionRef) {
-        self.user_data()
-            .get::<ImageCopySessionsData>()
-            .unwrap()
-            .borrow_mut()
-            .cursor_sessions
-            .retain(|s| s != session);
+        if let Some(sessions) = self.user_data().get::<ImageCopySessionsData>() {
+            sessions
+                .borrow_mut()
+                .cursor_sessions
+                .retain(|s| s != session);
+        }
     }
 
     fn cursor_sessions(&self) -> Vec<CursorSessionRef> {

@@ -11,6 +11,7 @@ pub mod iced;
 pub mod prelude;
 pub mod quirks;
 pub mod renderer_cache_probe;
+pub mod retest;
 pub mod rlimit;
 pub mod screenshot;
 pub mod tween;

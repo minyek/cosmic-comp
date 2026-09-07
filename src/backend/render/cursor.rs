@@ -518,6 +518,24 @@ fn same_direction(a: f64, b: f64) -> bool {
         || (a <= SHAKE_SAME_SIGN_TOLERANCE && b <= SHAKE_SAME_SIGN_TOLERANCE)
 }
 
+pub(crate) fn retest_cache_counts(seat: &Seat<State>) -> (usize, usize) {
+    seat.user_data()
+        .get::<CursorState>()
+        .map(|state| {
+            let state = state.lock().unwrap();
+            (
+                state.image_cache.frames.len(),
+                state
+                    .image_cache
+                    .frames
+                    .iter()
+                    .filter(|frame| !frame.unmagnified)
+                    .count(),
+            )
+        })
+        .unwrap_or_default()
+}
+
 #[derive(Default)]
 struct CursorImageCache {
     cursor: Option<CursorIcon>,
@@ -527,6 +545,11 @@ struct CursorImageCache {
 impl CursorImageCache {
     fn select_cursor(&mut self, cursor: CursorIcon) {
         if self.cursor != Some(cursor) {
+            crate::utils::retest::add(&crate::utils::retest::CURSOR_SHAPE_CHANGES, 1);
+            crate::utils::retest::add(
+                &crate::utils::retest::CURSOR_FRAMES_EVICTED,
+                self.frames.len(),
+            );
             self.frames.clear();
             self.cursor = Some(cursor);
         }
@@ -566,7 +589,12 @@ impl CursorStateInner {
             return;
         }
 
+        let before = self.image_cache.frames.len();
         self.image_cache.frames.retain(|frame| frame.unmagnified);
+        crate::utils::retest::add(
+            &crate::utils::retest::CURSOR_MAGNIFIED_EVICTED,
+            before - self.image_cache.frames.len(),
+        );
     }
 
     /// Feed one relative-motion event into the shake detector.
@@ -797,8 +825,12 @@ pub fn draw_cursor<R>(
             .iter()
             .position(|frame| frame.key == key)
         {
-            Some(index) => index,
+            Some(index) => {
+                crate::utils::retest::add(&crate::utils::retest::CURSOR_CACHE_HITS, 1);
+                index
+            }
             None => {
+                crate::utils::retest::add(&crate::utils::retest::CURSOR_CACHE_MISSES, 1);
                 let image = {
                     let cursor = state.get_named_cursor(current_cursor);
                     cursor.render_frame(size_px, frame_idx)

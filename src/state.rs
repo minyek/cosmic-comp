@@ -175,16 +175,18 @@ impl ClientState {
 impl ClientData for ClientState {
     fn initialized(&self, _client_id: ClientId) {}
     fn disconnected(&self, client_id: ClientId, _reason: DisconnectReason) {
+        crate::utils::retest::add(&crate::utils::retest::CLIENT_DISCONNECTS, 1);
         self.evlh.insert_idle(move |state| {
             if let BackendData::Kms(kms_state) = &mut state.backend {
                 let primary = *kms_state.primary_node.read().unwrap();
                 // A client can import buffers on multiple GPUs.
                 let mut freed_device = false;
                 for device in kms_state.drm_devices.values_mut() {
-                    if device.inner.active_clients.remove(&client_id)
-                        && !device.inner.in_use(primary.as_ref())
-                    {
-                        freed_device = true;
+                    if device.inner.active_clients.remove(&client_id) {
+                        crate::utils::retest::add(&crate::utils::retest::CLIENT_GPU_REMOVALS, 1);
+                        if !device.inner.in_use(primary.as_ref()) {
+                            freed_device = true;
+                        }
                     }
                 }
                 if freed_device && let Err(err) = kms_state.refresh_used_devices() {

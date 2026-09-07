@@ -54,7 +54,7 @@ use smithay::{
                 GlesRenderbuffer, GlesRenderer, GlesTexture, Uniform, element::TextureShaderElement,
             },
             glow::GlowRenderer,
-            multigpu::{Error as MultiError, GpuManager},
+            multigpu::{ApiDevice, Error as MultiError, GpuManager},
             sync::SyncPoint,
             utils::with_renderer_surface_state,
         },

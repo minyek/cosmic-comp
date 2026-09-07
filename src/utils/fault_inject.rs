@@ -29,9 +29,21 @@ pub fn capture_constraints_armed() -> bool {
     *ARMED.get_or_init(|| bool_var(CAPTURE_CONSTRAINTS).unwrap_or(false))
 }
 
+pub fn capture_constraints_requested(scope: &str) -> bool {
+    capture_constraints_armed() || super::retest::armed(&format!("capture-{scope}"))
+}
+
 /// Run `query`, or fail it in place when the capture fault is armed.
 pub fn capture_constraints<T>(scope: &str, query: impl FnOnce() -> Option<T>) -> Option<T> {
-    if capture_constraints_armed() {
+    if capture_constraints_armed() || super::retest::fault(&format!("capture-{scope}")) {
+        super::retest::add(
+            match scope {
+                "workspace" => &super::retest::CAPTURE_WORKSPACE_FAULTS,
+                "toplevel" => &super::retest::CAPTURE_TOPLEVEL_FAULTS,
+                _ => unreachable!("unknown capture scope"),
+            },
+            1,
+        );
         warn!("Failing screencopy constraints for {scope} (fault injection)");
         return None;
     }

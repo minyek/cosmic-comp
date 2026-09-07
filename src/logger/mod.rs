@@ -18,11 +18,15 @@ pub fn init_logger() -> Result<()> {
     // defaults so non-debug-hunters aren't drowned in info-level chatter.
     let filter = match EnvFilter::try_from_default_env() {
         Ok(f) => f,
-        Err(_) => EnvFilter::new(if cfg!(debug_assertions) { "info" } else { "warn" })
-            .add_directive(Directive::from_str("cosmic_text=error").unwrap())
-            .add_directive(Directive::from_str("calloop=error").unwrap())
-            .add_directive(Directive::from_str(&format!("smithay={level}")).unwrap())
-            .add_directive(Directive::from_str(&format!("cosmic_comp={level}")).unwrap()),
+        Err(_) => EnvFilter::new(if cfg!(debug_assertions) {
+            "info"
+        } else {
+            "warn"
+        })
+        .add_directive(Directive::from_str("cosmic_text=error").unwrap())
+        .add_directive(Directive::from_str("calloop=error").unwrap())
+        .add_directive(Directive::from_str(&format!("smithay={level}")).unwrap())
+        .add_directive(Directive::from_str(&format!("cosmic_comp={level}")).unwrap()),
     };
 
     let fmt_layer = fmt::layer().compact();

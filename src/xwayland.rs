@@ -808,6 +808,7 @@ impl XwmHandler for State {
                 crate::shell::ActivationKey::X11(window.window_id()),
                 *context,
             );
+            crate::utils::retest::add(&crate::utils::retest::X11_ACTIVATIONS_INSERTED, 1);
         }
         let fullscreen = window.is_fullscreen().then(|| seat.active_output());
         let minimized = window.is_hidden();
@@ -853,6 +854,7 @@ impl XwmHandler for State {
                     .and_then(|data| data.user_data.get::<ActivationContext>())
             {
                 e.insert(*context);
+                crate::utils::retest::add(&crate::utils::retest::X11_ACTIVATIONS_INSERTED, 1);
             }
             let res = shell.map_window(
                 &window,

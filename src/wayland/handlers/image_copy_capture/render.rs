@@ -316,10 +316,11 @@ pub fn render_workspace_to_buffer(
 ) {
     let shell = state.common.shell.read();
     let Some(workspace) = shell.workspaces.space_for_handle(&handle) else {
+        frame.fail(CaptureFailureReason::Stopped);
         return;
     };
 
-    let mut output = workspace.output().clone();
+    let output = workspace.output().clone();
     let idx = shell.workspaces.idx_for_handle(&output, &handle).unwrap();
     std::mem::drop(shell);
 
@@ -329,11 +330,10 @@ pub fn render_workspace_to_buffer(
 
     let buffer = frame.buffer();
     let buffer_size = buffer_dimensions(&buffer).unwrap();
-    if fault_inject::capture_constraints_armed() || mode != Some(buffer_size) {
+    if fault_inject::capture_constraints_requested("workspace") || mode != Some(buffer_size) {
         let Some(constraints) = fault_inject::capture_constraints("workspace", || {
             constraints_for_output(&output, &mut state.backend)
         }) else {
-            // Drop the workspace's owned Session so the client receives `stopped`.
             if let Some(workspace) = state
                 .common
                 .shell
@@ -573,19 +573,21 @@ pub fn render_window_to_buffer(
 ) {
     if !toplevel.alive() {
         toplevel.clone().remove_session(session);
+        frame.fail(CaptureFailureReason::Stopped);
         return;
     }
 
     let buffer = frame.buffer();
     let geometry = toplevel.geometry();
     let buffer_size = buffer_dimensions(&buffer).unwrap();
-    if fault_inject::capture_constraints_armed()
+    if fault_inject::capture_constraints_requested("toplevel")
         || buffer_size != geometry.size.to_buffer(1, Transform::Normal)
     {
         let Some(constraints) = fault_inject::capture_constraints("toplevel", || {
             constraints_for_toplevel(toplevel, &mut state.backend)
         }) else {
             toplevel.clone().remove_session(session);
+            frame.fail(CaptureFailureReason::Stopped);
             return;
         };
         session.update_constraints(constraints);

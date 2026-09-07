@@ -16,11 +16,34 @@
 //! length grows without bound names the leaking renderer.
 
 use std::collections::BTreeMap;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 /// Latest `dmabuf_cache` length per renderer label.
 static CACHE_SIZES: Mutex<BTreeMap<String, usize>> = Mutex::new(BTreeMap::new());
+
+#[cfg(test)]
+mod lifecycle_tests {
+    use super::*;
+
+    #[test]
+    fn retiring_thread_removes_its_cache_observations() {
+        let marker = SurfaceThreadHandle::new();
+        record("surface[fixture] gpu", 3);
+        record_detail("compositor[fixture]", "slots".into());
+        drop(marker);
+        assert!(
+            !snapshot()
+                .iter()
+                .any(|(label, _)| label.contains("fixture"))
+        );
+        assert!(
+            !details_snapshot()
+                .iter()
+                .any(|(label, _)| label.contains("fixture"))
+        );
+    }
+}
 
 /// Live surface render threads. Each surface thread holds a
 /// [`SurfaceThreadHandle`] for its whole lifetime, so a count above the number
@@ -52,6 +75,15 @@ impl Default for SurfaceThreadHandle {
 
 impl Drop for SurfaceThreadHandle {
     fn drop(&mut self) {
+        let owner = format!("@{:?}]", std::thread::current().id());
+        CACHE_SIZES
+            .lock()
+            .unwrap()
+            .retain(|key, _| !key.contains(&owner));
+        CACHE_DETAILS
+            .lock()
+            .unwrap()
+            .retain(|key, _| !key.contains(&owner));
         LIVE_SURFACE_THREADS.fetch_sub(1, Ordering::Relaxed);
     }
 }
@@ -67,7 +99,7 @@ pub fn live_surface_threads() -> usize {
 /// post-cleanup size.
 pub fn record(label: impl Into<String>, dmabuf_cache_len: usize) {
     if let Ok(mut map) = CACHE_SIZES.lock() {
-        map.insert(label.into(), dmabuf_cache_len);
+        map.insert(scoped_label(label.into()), dmabuf_cache_len);
     }
 }
 
@@ -87,8 +119,27 @@ static CACHE_DETAILS: Mutex<BTreeMap<String, String>> = Mutex::new(BTreeMap::new
 /// Record a detail line for `label`, overwriting the previous one.
 pub fn record_detail(label: impl Into<String>, detail: String) {
     if let Ok(mut map) = CACHE_DETAILS.lock() {
-        map.insert(label.into(), detail);
+        map.insert(scoped_label(label.into()), detail);
     }
+}
+
+fn scoped_label(label: String) -> String {
+    if label.starts_with("surface[") || label.starts_with("compositor[") {
+        label.replacen(']', &format!("@{:?}]", std::thread::current().id()), 1)
+    } else {
+        label
+    }
+}
+
+pub fn clear_main() {
+    CACHE_SIZES
+        .lock()
+        .unwrap()
+        .retain(|key, _| !key.starts_with("main "));
+    CACHE_DETAILS
+        .lock()
+        .unwrap()
+        .retain(|key, _| !key.starts_with("main ") && !key.starts_with("compositor_map "));
 }
 
 /// Every recorded detail line, sorted by label.
@@ -209,7 +260,10 @@ pub fn set_egl_image_sites(sites: Vec<(String, String)>) {
 
 /// Every recorded live `EGLImage` allocation site, in census-ready (rarest-first) order.
 pub fn egl_image_sites_snapshot() -> Vec<(String, String)> {
-    EGL_IMAGE_SITES.lock().map(|v| v.clone()).unwrap_or_default()
+    EGL_IMAGE_SITES
+        .lock()
+        .map(|v| v.clone())
+        .unwrap_or_default()
 }
 
 /// Group live `EGLImage` backtraces (from smithay's `debug_egl_image_sites`) by
@@ -220,7 +274,9 @@ pub fn egl_image_sites_snapshot() -> Vec<(String, String)> {
 pub fn group_egl_image_sites(sites: &[(usize, String)]) -> Vec<(String, String)> {
     let mut by_site: BTreeMap<String, usize> = BTreeMap::new();
     for (_handle, backtrace) in sites {
-        *by_site.entry(reduce_clone_backtrace(backtrace)).or_default() += 1;
+        *by_site
+            .entry(reduce_clone_backtrace(backtrace))
+            .or_default() += 1;
     }
     let mut groups: Vec<(String, usize)> = by_site.into_iter().collect();
     groups.sort_by_key(|(_, n)| *n);

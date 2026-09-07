@@ -98,7 +98,9 @@ impl PointerConstraintsHandler for State {
         constraint_remove: ConstraintRemove,
     ) {
         match constraint_remove {
-            ConstraintRemove::PointerLeave(_) => {}
+            ConstraintRemove::PointerLeave(_) => {
+                crate::utils::retest::add(&crate::utils::retest::POINTER_CONSTRAINT_LEAVES, 1);
+            }
             ConstraintRemove::Destroyed(constraint) => {
                 let Some(seat) = self
                     .common
@@ -120,10 +122,12 @@ impl PointerConstraintsHandler for State {
                     surface,
                     seat.pointer_constraint_hint(),
                 ) else {
+                    crate::utils::retest::add(&crate::utils::retest::POINTER_HINT_REJECTED, 1);
                     return;
                 };
 
                 self.apply_cursor_hint(surface, pointer, hint_location, Some(&constraint));
+                crate::utils::retest::add(&crate::utils::retest::POINTER_HINT_APPLIED, 1);
                 seat.set_pointer_constraint_hint(None);
             }
         }

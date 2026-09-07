@@ -20,7 +20,7 @@
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use smithay::output::Output;
+use smithay::{backend::session::Session, output::Output};
 use tracing::warn;
 
 use crate::shell::{Shell, Workspace, zoom::OutputZoomState};
@@ -48,9 +48,12 @@ pub fn install_sigusr1_handler() {
 
 /// Called once per event-loop iteration. Cheap when no dump is pending
 /// (single atomic load).
-pub fn drain_dump_requests(state: &State) {
+pub fn drain_dump_requests(state: &mut State) {
     if !DUMP_REQUESTED.swap(false, Ordering::SeqCst) {
         return;
+    }
+    if let crate::state::BackendData::Kms(kms) = &mut state.backend {
+        kms.probe_renderer_caches();
     }
     dump_resource_census(state);
 }
@@ -58,6 +61,7 @@ pub fn drain_dump_requests(state: &State) {
 fn dump_resource_census(state: &State) {
     let common = &state.common;
     warn!("=== VRAM/resource census (SIGUSR1) ===");
+    warn!("renderer census: dead=0");
 
     let shell = common.shell.read();
     warn!(
@@ -71,6 +75,7 @@ fn dump_resource_census(state: &State) {
     warn!("iced_elements={}", crate::utils::iced::live_count());
 
     dump_shell(&shell);
+    dump_retest_state(state, &shell);
 
     dump_gl_object_counters();
 
@@ -82,13 +87,77 @@ fn dump_resource_census(state: &State) {
     // allocate/delete imbalance that the per-message trace lines lose to
     // journald rate-limiting.
     crate::utils::gl_debug::dump_histogram();
+    warn!("=== END VRAM/resource census ===");
 }
 
-/// Process-wide GL object accounting from the smithay fork: live counts per
-/// object class (created − destroyed) and the deferred-destruction queue
-/// depth per resource type (queued − drained). A live count that grows while
-/// the window set is constant names the leaking class; a growing queue depth
-/// means a context's cleanup queue is not being drained.
+fn dump_retest_state(state: &State, shell: &Shell) {
+    use crate::{shell::ActivationKey, state::BackendData, utils::retest};
+    let (active, threads, gpu_clients, enumeration_pending) = match &state.backend {
+        BackendData::Kms(kms) => (
+            usize::from(kms.session.is_active()),
+            kms.drm_devices
+                .values()
+                .map(|device| device.inner.surfaces.len())
+                .sum::<usize>(),
+            kms.drm_devices
+                .values()
+                .map(|device| device.inner.active_clients.len())
+                .sum::<usize>(),
+            usize::from(kms.api.debug_enumeration_pending()),
+        ),
+        _ => (1, 0, 0, 0),
+    };
+    let (lock_surfaces, stale_lock_surfaces) = shell
+        .session_lock
+        .as_ref()
+        .map(|lock| {
+            (
+                lock.surfaces.len(),
+                lock.surfaces
+                    .keys()
+                    .filter(|output| !shell.outputs().any(|live| live == *output))
+                    .count(),
+            )
+        })
+        .unwrap_or_default();
+    let sticky_minimized = shell
+        .workspaces
+        .sets
+        .values()
+        .map(|set| set.minimized_windows.len())
+        .sum::<usize>();
+    let wayland = shell
+        .pending_activations
+        .keys()
+        .filter(|key| matches!(key, ActivationKey::Wayland(_)))
+        .count();
+    let x11 = shell.pending_activations.len() - wayland;
+    let (cursor_frames, cursor_magnified) = shell
+        .seats
+        .iter()
+        .map(crate::backend::render::cursor::retest_cache_counts)
+        .fold((0, 0), |(frames, magnified), (f, m)| {
+            (frames + f, magnified + m)
+        });
+    warn!("retest counters: {}", retest::snapshot());
+    warn!(
+        "retest state: session_active={active} renderer_enumeration_pending={enumeration_pending} cleanup_pending={} lock_active={} lock_surfaces={lock_surfaces} stale_lock_surfaces={stale_lock_surfaces} expected_surface_threads={threads} sticky_minimized={sticky_minimized} pending_wayland_activations={wayland} pending_x11_activations={x11} gpu_clients={gpu_clients} cursor_frames={cursor_frames} cursor_magnified={cursor_magnified}",
+        retest::CLEANUP_PENDING.load(Ordering::Relaxed),
+        usize::from(shell.session_lock.is_some())
+    );
+    for (index, seat) in shell.seats.iter().enumerate() {
+        if let Some(pointer) = seat.get_pointer() {
+            let position = pointer.current_location();
+            warn!(
+                "retest pointer: seat={index} pointer_x={} pointer_y={}",
+                position.x, position.y
+            );
+        }
+    }
+}
+
+/// Explicit GL lifecycle balances and outstanding deferred destruction work.
+/// Context retirement can release objects without an instrumented GL delete.
 fn dump_gl_object_counters() {
     // Signed differences: a negative value means a destroy path fired whose
     // creation site is not instrumented — a coverage gap worth knowing about,
@@ -108,15 +177,39 @@ fn dump_gl_object_counters() {
     );
     warn!(
         "GL cleanup queue depth: texture={} framebuffer={} renderbuffer={} egl_image={} mapping={} program={} sync={}",
-        live(c.queued_texture, c.drained_texture),
-        live(c.queued_framebuffer, c.drained_framebuffer),
-        live(c.queued_renderbuffer, c.drained_renderbuffer),
-        live(c.queued_egl_image, c.drained_egl_image),
-        live(c.queued_mapping, c.drained_mapping),
-        live(c.queued_program, c.drained_program),
-        live(c.queued_sync, c.drained_sync),
+        live(c.queued_texture, c.drained_texture + c.discarded_texture),
+        live(
+            c.queued_framebuffer,
+            c.drained_framebuffer + c.discarded_framebuffer
+        ),
+        live(
+            c.queued_renderbuffer,
+            c.drained_renderbuffer + c.discarded_renderbuffer
+        ),
+        live(
+            c.queued_egl_image,
+            c.drained_egl_image + c.discarded_egl_image
+        ),
+        live(c.queued_mapping, c.drained_mapping + c.discarded_mapping),
+        live(c.queued_program, c.drained_program + c.discarded_program),
+        live(c.queued_sync, c.drained_sync + c.discarded_sync),
     );
     warn!("GL raw counters: {c:?}");
+    let queues = smithay::backend::renderer::gles::vram_queue_snapshots();
+    for (kind, queue) in [
+        ("texture", queues.texture),
+        ("framebuffer", queues.framebuffer),
+        ("renderbuffer", queues.renderbuffer),
+        ("egl_image", queues.egl_image),
+        ("mapping", queues.mapping),
+        ("program", queues.program),
+        ("sync", queues.sync),
+    ] {
+        warn!(
+            "GL queue progress: {kind}_submitted={} {kind}_oldest={} {kind}_pending={}",
+            queue.submitted, queue.oldest, queue.pending
+        );
+    }
 }
 
 fn dump_workload_counters() {
@@ -231,6 +324,18 @@ fn dump_shell(shell: &Shell) {
         }
         for fs in &ws.fullscreen_surfaces {
             add(&fs.surface, &mut surf_totals, &mut surface_count);
+        }
+    }
+    for set in shell.workspaces.sets.values() {
+        for mapped in set.sticky_layer.mapped() {
+            for (surface, _) in mapped.windows() {
+                add(&surface, &mut surf_totals, &mut surface_count);
+            }
+        }
+        for minimized in &set.minimized_windows {
+            for surface in minimized.windows() {
+                add(&surface, &mut surf_totals, &mut surface_count);
+            }
         }
     }
     warn!(

@@ -45,7 +45,7 @@ pub use self::render::*;
 use self::user_data::*;
 pub use self::user_data::{
     FrameHolder, ImageCopySessions, SessionCensus, SessionData, SessionHolder, pending_frame_count,
-    session_census, session_census_user_data,
+    session_census, session_census_user_data, stop_all_capture_sessions,
 };
 
 fn default_cursor_size() -> Size<i32, BufferCoords> {
@@ -199,6 +199,7 @@ impl ImageCopyCaptureHandler for State {
         match ImageCaptureSourceKind::from_source(&session.source()) {
             ImageCaptureSourceKind::Output(weak) => {
                 let Some(mut output) = weak.upgrade() else {
+                    session.stop();
                     return;
                 };
 
@@ -229,6 +230,7 @@ impl ImageCopyCaptureHandler for State {
             ImageCaptureSourceKind::Workspace(handle) => {
                 let mut shell = self.common.shell.write();
                 let Some(workspace) = shell.workspaces.space_for_handle_mut(&handle) else {
+                    session.stop();
                     return;
                 };
 
@@ -259,6 +261,7 @@ impl ImageCopyCaptureHandler for State {
             }
             ImageCaptureSourceKind::Toplevel(toplevel) => {
                 let Some(mut toplevel) = toplevel.upgrade() else {
+                    session.stop();
                     return;
                 };
 
@@ -294,6 +297,7 @@ impl ImageCopyCaptureHandler for State {
         match ImageCaptureSourceKind::from_source(&session.source()) {
             ImageCaptureSourceKind::Output(weak) => {
                 let Some(mut output) = weak.upgrade() else {
+                    frame.fail(CaptureFailureReason::Stopped);
                     return;
                 };
 
@@ -305,6 +309,7 @@ impl ImageCopyCaptureHandler for State {
             }
             ImageCaptureSourceKind::Toplevel(toplevel) => {
                 let Some(toplevel) = toplevel.upgrade() else {
+                    frame.fail(CaptureFailureReason::Stopped);
                     return;
                 };
 
@@ -404,7 +409,8 @@ fn constraints_for_output(output: &Output, backend: &mut BackendData) -> Option<
             kms.target_node_for_output(output)
                 .or(*kms.primary_node.read().unwrap())
         })
-        .unwrap();
+        .inspect_err(|err| tracing::warn!(?err, "Couldn't use node for screencopy"))
+        .ok()?;
     Some(constraints_for_renderer(mode, renderer.as_mut()))
 }
 
@@ -426,7 +432,8 @@ fn constraints_for_toplevel(
 
             dma_node.or(*kms.primary_node.read().unwrap())
         })
-        .unwrap();
+        .inspect_err(|err| tracing::warn!(?err, "Couldn't use node for screencopy"))
+        .ok()?;
 
     Some(constraints_for_renderer(size, renderer.as_mut()))
 }

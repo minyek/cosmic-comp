@@ -11,6 +11,7 @@ use crate::{
     wayland::handlers::image_copy_capture::PendingImageCopyData,
 };
 
+use crate::utils::retest;
 use anyhow::{Context, Result};
 use cosmic_comp_config::output::comp::{AdaptiveSync, OutputConfig, OutputState};
 use smithay::{
@@ -322,7 +323,6 @@ impl State {
                         .find_map(|(crtc, surface)| (surface.connector == conn).then_some(crtc))
                         .cloned()
                     {
-
                         device.inner.surfaces.remove(&crtc).unwrap().drop_and_join();
                     }
 
@@ -924,6 +924,10 @@ impl LockedDevice<'_> {
                     };
 
                     let mut compositor = compositor.lock().unwrap();
+                    if retest::fault("scanout") {
+                        retest::add(&retest::SCANOUT_FAULTS, 1);
+                        return Err(retest::InjectedFault("scanout").into());
+                    }
                     compositor.render_frame(
                         renderer,
                         &elements,
@@ -944,6 +948,13 @@ impl LockedDevice<'_> {
             // cached so they don't pin client buffers in VRAM until its next draw.
             if let Err(err) = renderer.invalidate_caches() {
                 debug!(?err, "Failed to invalidate main-thread renderer caches");
+            }
+            retest::add(&retest::SCANOUT_INVALIDATIONS, 1);
+            if render_result.as_ref().err().is_some_and(|err| {
+                err.downcast_ref::<retest::InjectedFault>()
+                    .is_some_and(|fault| fault.0 == "scanout")
+            }) {
+                retest::add(&retest::SCANOUT_ERRORS_PRESERVED, 1);
             }
             render_result?;
         }

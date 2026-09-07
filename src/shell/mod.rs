@@ -936,6 +936,7 @@ impl Workspaces {
             return;
         }
 
+        crate::wayland::handlers::image_copy_capture::stop_all_capture_sessions(output.user_data());
         if let Some(zoom_state) = output.user_data().get::<Mutex<OutputZoomState>>() {
             zoom_state.lock().unwrap().output_leave(output);
         }
@@ -2568,14 +2569,17 @@ impl Shell {
         workspace_state: &mut WorkspaceUpdateGuard<'_, State>,
         xdg_activation_state: &XdgActivationState,
     ) {
+        crate::utils::retest::add(&crate::utils::retest::OUTPUT_REMOVALS, 1);
         self.workspaces.remove_output(
             output,
             self.seats.iter(),
             workspace_state,
             xdg_activation_state,
         );
-        if let Some(session_lock) = &mut self.session_lock {
-            session_lock.surfaces.remove(output);
+        if let Some(session_lock) = &mut self.session_lock
+            && session_lock.surfaces.remove(output).is_some()
+        {
+            crate::utils::retest::add(&crate::utils::retest::LOCK_SURFACE_REMOVALS, 1);
         }
     }
 
@@ -2649,15 +2653,28 @@ impl Shell {
             .retain(|pending| pending.surface.alive());
         self.pending_windows
             .retain(|pending| pending.surface.alive());
-        self.pending_activations.retain(|key, _| match key {
-            ActivationKey::Wayland(surface) => {
-                use smithay::reexports::wayland_server::Resource;
-                surface.is_alive()
+        self.pending_activations.retain(|key, _| {
+            let retained = match key {
+                ActivationKey::Wayland(surface) => {
+                    use smithay::reexports::wayland_server::Resource;
+                    surface.is_alive()
+                }
+                ActivationKey::X11(_) => self
+                    .pending_windows
+                    .iter()
+                    .any(|p| &ActivationKey::from(&p.surface) == key),
+            };
+            if !retained {
+                use crate::utils::retest;
+                retest::add(
+                    match key {
+                        ActivationKey::Wayland(_) => &retest::WAYLAND_ACTIVATIONS_PRUNED,
+                        ActivationKey::X11(_) => &retest::X11_ACTIVATIONS_PRUNED,
+                    },
+                    1,
+                );
             }
-            ActivationKey::X11(_) => self
-                .pending_windows
-                .iter()
-                .any(|p| &ActivationKey::from(&p.surface) == key),
+            retained
         });
     }
 
