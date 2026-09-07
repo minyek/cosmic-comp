@@ -518,7 +518,7 @@ fn same_direction(a: f64, b: f64) -> bool {
         || (a <= SHAKE_SAME_SIGN_TOLERANCE && b <= SHAKE_SAME_SIGN_TOLERANCE)
 }
 
-pub(crate) fn retest_cache_counts(seat: &Seat<State>) -> (usize, usize) {
+pub(crate) fn retest_cache_counts(seat: &Seat<State>) -> (usize, usize, usize) {
     seat.user_data()
         .get::<CursorState>()
         .map(|state| {
@@ -531,6 +531,7 @@ pub(crate) fn retest_cache_counts(seat: &Seat<State>) -> (usize, usize) {
                     .iter()
                     .filter(|frame| !frame.unmagnified)
                     .count(),
+                usize::from(state.is_magnifying()),
             )
         })
         .unwrap_or_default()

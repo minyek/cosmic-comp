@@ -20,11 +20,17 @@
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use smithay::{backend::session::Session, output::Output};
+use smithay::{
+    backend::session::Session,
+    output::Output,
+    reexports::wayland_server::Resource,
+    wayland::{compositor::CompositorHandler, seat::WaylandFocus},
+};
 use tracing::warn;
 
 use crate::shell::{Shell, Workspace, zoom::OutputZoomState};
 use crate::state::State;
+use crate::utils::prelude::OutputExt;
 use crate::wayland::handlers::image_copy_capture::{
     SessionCensus, pending_frame_count, session_census, session_census_user_data,
 };
@@ -132,16 +138,16 @@ fn dump_retest_state(state: &State, shell: &Shell) {
         .filter(|key| matches!(key, ActivationKey::Wayland(_)))
         .count();
     let x11 = shell.pending_activations.len() - wayland;
-    let (cursor_frames, cursor_magnified) = shell
+    let (cursor_frames, cursor_magnified, cursor_shaking) = shell
         .seats
         .iter()
         .map(crate::backend::render::cursor::retest_cache_counts)
-        .fold((0, 0), |(frames, magnified), (f, m)| {
-            (frames + f, magnified + m)
+        .fold((0, 0, 0), |(frames, magnified, shaking), (f, m, s)| {
+            (frames + f, magnified + m, shaking + s)
         });
     warn!("retest counters: {}", retest::snapshot());
     warn!(
-        "retest state: session_active={active} renderer_enumeration_pending={enumeration_pending} cleanup_pending={} lock_active={} lock_surfaces={lock_surfaces} stale_lock_surfaces={stale_lock_surfaces} expected_surface_threads={threads} sticky_minimized={sticky_minimized} pending_wayland_activations={wayland} pending_x11_activations={x11} gpu_clients={gpu_clients} cursor_frames={cursor_frames} cursor_magnified={cursor_magnified}",
+        "retest state: session_active={active} renderer_enumeration_pending={enumeration_pending} cleanup_pending={} lock_active={} lock_surfaces={lock_surfaces} stale_lock_surfaces={stale_lock_surfaces} expected_surface_threads={threads} sticky_minimized={sticky_minimized} pending_wayland_activations={wayland} pending_x11_activations={x11} gpu_clients={gpu_clients} cursor_frames={cursor_frames} cursor_magnified={cursor_magnified} cursor_shaking={cursor_shaking}",
         retest::CLEANUP_PENDING.load(Ordering::Relaxed),
         usize::from(shell.session_lock.is_some())
     );
@@ -152,6 +158,24 @@ fn dump_retest_state(state: &State, shell: &Shell) {
                 "retest pointer: seat={index} pointer_x={} pointer_y={}",
                 position.x, position.y
             );
+            if let Some(surface) = pointer
+                .current_focus()
+                .and_then(|focus| focus.wl_surface().map(|surface| surface.into_owned()))
+                && let Some(client) = surface.client()
+                && let Some((output, (geometry, offset))) =
+                    shell.workspaces.sets.iter().find_map(|(output, set)| {
+                        set.surface_geometry_offset_from_toplevel(&surface)
+                            .map(|geometry| (output, geometry))
+                    })
+            {
+                let output_origin = output.geometry().loc;
+                warn!(
+                    "retest pointer geometry: seat={index} focus_origin_x={} focus_origin_y={} client_scale={}",
+                    output_origin.x + geometry.loc.x + offset.x,
+                    output_origin.y + geometry.loc.y + offset.y,
+                    state.client_compositor_state(&client).client_scale()
+                );
+            }
         }
     }
 }
