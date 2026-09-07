@@ -1,47 +1,48 @@
-# Building with / without VRAM instrumentation
+# Building the VRAM retest variants
 
-Two committed variants, each with its own pair of checkouts. The instrumentation
-is committed rather than applied on top, so it can't smear from one variant into
-the other.
+| Variant | Compositor checkout | Smithay dependency |
+| --- | --- | --- |
+| PR only | `.worktrees/pr2500-conflict`, `vram-leak-fixes` | Upstream git pin `e3d461a` |
+| Combined instrumented retest | `.worktrees/instr-invalidate`, `all-fixes-instrumented-invalidate` | Local instrumented Smithay worktree, based on `e3d461a` |
+| Existing local combined branch | Main checkout, `all-fixes` | Its committed git pin; not refreshed by this retest task |
 
-| Want | cosmic-comp checkout (branch) | smithay checkout (branch) |
-|------|-------------------------------|---------------------------|
-| **Clean** (production-like, no debug code) | `cosmic-comp` (`all-fixes`) | `smithay` (`vram-leak-fixes`) |
-| **Instrumented** (SIGUSR1 census, clone tracer, GL counters) | `cosmic-comp/.worktrees/instr-invalidate` (`all-fixes-instrumented-invalidate`) | `smithay/.worktrees/instr-invalidate` (`all-fixes-instrumented-invalidate`) |
+The instrumented compositor is based on PR commit `274fca13`. It also retains
+the existing weak toplevel-handle references, capture-session teardown and
+image-copy failure-path fixes from the previous combined build. These extras
+are not all in PR #2500. A combined-build desktop PASS therefore does not, by
+itself, establish a PR-only PASS.
 
-cosmic-comp patches `smithay = { path = "../smithay" }`, which resolves to the
-sibling `smithay` checkout for the clean build and, for the instrumented build,
-to `cosmic-comp/.worktrees/smithay` — a symlink pointing at smithay's
-`instr-invalidate` worktree. Each variant therefore builds without disturbing
-the other, and neither needs a branch switch.
+Only the instrumented checkout uses `smithay = { path = "../smithay" }`.
+Its sibling `.worktrees/smithay` symlink resolves to
+`/mnt/work/projects/cosmic-de/smithay/.worktrees/instr-invalidate`.
+Both working trees must be clean before identifying a release by git revisions.
+The retest service additionally matches the running executable's SHA256 and
+process start time against the requested build.
+
+Build from the instrumented checkout:
 
 ```bash
-# --- clean build (no instrumentation) ---
-cd /mnt/work/projects/cosmic-de/cosmic-comp && cargo build --release
-
-# --- instrumented build (VRAM hunt) ---
-cd /mnt/work/projects/cosmic-de/cosmic-comp/.worktrees/instr-invalidate && cargo build --release
+arm-free
+arm-run --wait --cpu-light --mutex cargo -m 14G -l vram-release -- \
+  cargo build --locked --release \
+  --manifest-path /mnt/work/projects/cosmic-de/cosmic-comp/.worktrees/instr-invalidate/Cargo.toml
+cargo build --locked --manifest-path docs/vram-tools/clients/Cargo.toml
+cargo build --locked --manifest-path docs/vram-tools/gpu-client/Cargo.toml
 ```
 
-Binary: `<checkout>/target/release/cosmic-comp`.
+Fat LTO may take longer than an interactive tool's budget. In that case launch
+the release build detached with `arm-run --resume-on-done` instead of `--wait`;
+keep the absolute manifest path. The binary is `target/release/cosmic-comp` in
+the instrumented checkout. This command does not install it.
 
-The release profile uses fat LTO, so a full build is long enough to want
-`arm-run`; see the root `CLAUDE.md` for the launch-detached-and-watch pattern.
+The desktop user owns deployment and logout/login. Before starting the new
+session, arrange an absolute, desktop-user-owned, mode-0700 directory in
+`COSMIC_RETEST_CONTROL`. Unset `COSMIC_FAULT_CAPTURE_CONSTRAINTS`.
+Then follow [RETEST.md](RETEST.md), using a fresh capture directory for each
+normal, fault and assisted hardware suite. Do not send SIGUSR1 to an
+unverified distro binary: its default action can terminate the compositor.
 
-## What each variant contains
-
-- **Clean** — the leak fixes only:
-  - cosmic-comp: every VRAM-leak fix + the #2095 review-feedback fix, plus a
-    "local build config" commit (smithay API migrations + the `../smithay`
-    patch). No debug code.
-  - smithay: `Renderer::invalidate_caches`, which drops every cached import
-    across the gles, glow, pixman and multigpu renderers.
-- **Instrumented** — the clean variant plus "do not merge" instrumentation
-  commits (and the investigation docs on the cosmic-comp side). Adds the SIGUSR1
-  resource census, dmabuf clone/drop tracer, GL object counters, the
-  per-EGLImage allocation-site registry, and the per-renderer cache probe.
-
-## Upstream PR branches (do not build from these for testing)
-
-- cosmic-comp: `vram-leak-fixes` (clean, pinned to an upstream smithay revision)
-- smithay: `renderer/invalidate-caches`
+The DMA-BUF helper needs GBM development libraries and read/write access to each
+requested render node. It requires linux-dmabuf protocol version 6 for explicit
+sampling-device attribution; a shared-memory fallback cannot test GPU-client
+registration and is deliberately not used.

@@ -1,62 +1,23 @@
-# VRAM capture and regression-test scripts
+# VRAM capture and regression tools
 
-Two toolsets share this directory. For a full regression pass against an
-installed build, follow
-[`../vram-regression-test-process.md`](../vram-regression-test-process.md); for
-exploratory leak hunting, follow
-[`../vram-leak-runbook.md`](../vram-leak-runbook.md).
+For the current full retest, use [BUILDING.md](BUILDING.md), then
+[RETEST.md](RETEST.md). Run desktop operations as the desktop user; the agent
+cannot signal that user's compositor or read its journal.
 
-Run them straight from the worktree — the desktop user is in the `work` group, so
-no copying to `/tmp` is needed. Only the capture output lives in `/tmp/vram-ctl/`.
+- `preflight.sh`: requires an exact PID, matching build SHA256 and protocol helper.
+- `session.sh`: collects complete censuses with exact request acknowledgements,
+  process identity and incremental journal evidence.
+- `drive.sh`: declares and drives separate normal, fault and assisted hardware
+  suites. Incomplete scenarios fail; each capture directory is single-use.
+- `census.py verdict`: validates the immutable manifest, completion and phase-local
+  evidence. `census.py diff` also reads historical captures without granting PASS.
+- `clients/`: controlled protocol clients; their exit status alone is not coverage.
 
-## Regression pass
+Fault tests use one-shot runtime controls. Do not enable the persistent legacy
+`COSMIC_FAULT_CAPTURE_CONSTRAINTS` environment variable for these suites.
 
-- **`preflight.sh`** — refuses to start unless the running compositor really is
-  the build under test: census strings present, binary older than the session,
-  optional md5 match against a given `target/release/cosmic-comp`, input tooling
-  and ydotoold up. Pass the build path to get the identity check.
-- **`session.sh`** — the capture session. Samples cosmic-comp's VRAM every 10 s
-  and serves `census`/`snapshot`/`stop` commands dropped into `/tmp/vram-ctl/cmd`,
-  writing every reading back world-readable. This is what lets a second,
-  unprivileged account drive and analyse a session it can neither signal nor read
-  the journal of. Also captures the journal if the compositor dies.
-- **`drive.sh`** — the phases: `selftest`, `monitors`, `apps`, `capture`,
-  `popups`, `zoom`, `workspaces`, `pointer`, `minimize`, or `all` for an
-  unattended run that censuses at every boundary. Input goes through ydotool;
-  see the process doc for why wtype cannot work here.
-  `faultcapture`/`faultall` cover the capture *failure* paths, and need the
-  compositor started with `COSMIC_FAULT_CAPTURE_CONSTRAINTS=1` — no desktop
-  workload can reach those branches on its own (process doc §5).
-- **`census.py`** — `verdict` for a machine-checked PASS/FAIL (non-zero exit on
-  failure, so it can gate a release), `diff` for a counter table across captures.
-  Activity is scored inside each phase's own `post-<phase>` span, and a
-  compositor panic anywhere in the captured journal fails the run.
-
-## Leak hunting
-
-- **`vram-watch.sh`** — `flock`-guarded single-instance sampler. Logs
-  cosmic-comp's own `nvidia-smi` VRAM row every 60 s to `/tmp/vram.csv`
-  (`YYYY-MM-DD-HH:MM:SS,<MiB>`) and fires a SIGUSR1 census at start + hourly.
-  Use for multi-day soaks, where `session.sh` would be overkill.
-- **`leak-snapshot.sh`** — point-in-time snapshot into
-  `/tmp/leak-snapshot-<ts>/`: census, `nvidia-smi`, open-fd count, dma-buf fdinfo
-  inventory + summary (pinned client buffers vs compositor-internal GL objects),
-  `/proc/<pid>/status` `Vm*` lines, and the journal.
-- **`reverse-ref-scan.py`** — static scan for the reference patterns that caused
-  the original leaks.
-
-## Prerequisite: the running compositor must be OUR instrumented build
-
-`SIGUSR1` and `GL_KHR_debug` only do anything if the live `/usr/bin/cosmic-comp`
-is the instrumented counter build, **not** the Fedora distro RPM (a `dnf`
-operation can silently overwrite it — observed 2026-06-13). `preflight.sh` checks
-this; to verify by hand:
-
-```bash
-# our build contains these strings; the distro RPM contains none of them
-strings /usr/bin/cosmic-comp | grep -E 'VRAM/resource census|SIGUSR1 dumper installed'
-rpm -Vf /usr/bin/cosmic-comp   # a '5' flag on the binary = NOT the pristine RPM (good — it's ours)
-```
-
-If absent: `sudo make install` from the repo (copies `target/release/cosmic-comp`),
-then log out / back in so the new binary is the running compositor.
+For exploratory investigation, see the [leak runbook](../vram-leak-runbook.md).
+`vram-watch.sh` is a separate long-soak sampler; `leak-snapshot.sh` captures
+point-in-time process/driver diagnostics. Do not run other SIGUSR1 samplers during
+a strict retest: duplicate or unsolicited censuses invalidate request evidence.
+`reverse-ref-scan.py` checks reference patterns from the original leak hunt.

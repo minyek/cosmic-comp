@@ -21,23 +21,29 @@ synthetic fixtures before the real desktop is touched.
 
 - [x] Back up and rebase instrumented Smithay onto e3d461a and compositor onto
   PR 274fca13. Resolve instrumentation without replacing cleanup semantics.
-- [ ] Wave 1A, harness: docs/vram-tools/{census.py,drive.sh,session.sh,preflight.sh},
+- [x] Wave 1A, harness: docs/vram-tools/{census.py,drive.sh,session.sh,preflight.sh},
   new harness utilities/tests. Pin false passes first, then implement strict run
   evidence, transport, safety restoration, suite orchestration and hardware phases.
-- [ ] Wave 1B, clients: docs/vram-tools/clients/** only. Build a standalone Wayland
+- [x] Wave 1B, clients: docs/vram-tools/clients/** only. Build a standalone Wayland
   test client for pointer constraints, cursor shapes, minimized variants and
   activation teardown; deterministic JSON results and bounded waits. No desktop run.
-- [ ] Wave 1C, instrumentation: src/** and Cargo files only. Add scoped fault
+- [x] Wave 1C, instrumentation: src/** and Cargo files only. Add scoped fault
   controls/counters and resource census for lock teardown, cursor eviction,
   scheduling/retry/invalidation, activation and multi-GPU client cleanup.
-- [ ] Merge isolated wave branches serially after targeted tests/review. Wire
+- [x] Merge isolated wave branches serially after targeted tests/review. Wire
   client/census contracts and add integration fixtures before full validation.
-- [ ] Run harness tests, client build, compositor CI matrix, then instrumented
+- [x] Run harness tests, client build, compositor CI matrix, then instrumented
   release build through arm-run. Do not install or run interactive desktop tests.
-- [ ] Update building/process/findings docs with exact revisions, scope, runnable
+- [x] Update building/process/findings docs with exact revisions, scope, runnable
   commands and required user-assisted hardware validation. Preserve old measurements
   but retract unsupported coverage, no push or external posting.
 
 Wave tasks have no shared files and each implementer uses an isolated worktree.
 The orchestrator performs final integration and the full gate once. Functional
 offline tests are separate from deliberate timing-sensitive desktop rounds.
+
+Integration review added an isolated DMA-BUF client task under
+`docs/vram-tools/gpu-client/**`: SHM windows cannot register GPU import clients.
+Review also required exact outstanding queue tickets, observed pointer geometry,
+and separate unchanged-shape/shake scenarios. Their regressions are test-pinned;
+the compositor gate was repeated after the final observer additions.

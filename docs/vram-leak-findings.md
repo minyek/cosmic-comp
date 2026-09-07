@@ -8,6 +8,31 @@ arrives; keep entries dated so the timeline stays legible.
 
 ## Current status
 
+### 2026-09-07: retest harness correction; desktop validation pending
+
+The instrumented tree has been refreshed onto PR `274fca13` and upstream Smithay
+`e3d461a`, retaining the combined build's separate weak-handle and capture fixes.
+See [BUILDING.md](vram-tools/BUILDING.md) for the exact scope and
+[RETEST.md](vram-tools/RETEST.md) for the replacement workflow.
+
+Earlier PASS labels below describe their original measurements, not coverage of
+the new fixes. The old verifier could accept unknown checks, missing boundaries,
+retained minimized windows and incomplete runs. Its parser could overwrite dead
+cache counts or miss prefixed queue lines. Census refresh could be stale, and
+renderer retirement could leave obsolete observations and queue totals behind.
+Aggregate queue totals also cannot identify a request stranded on one renderer
+while another drains newer requests.
+
+Keep historical captures. Re-run affected scenarios before using them as regression
+guards; captures without the new manifest and outstanding-request schema cannot
+be upgraded into full-suite PASS by rescoring. These findings qualify harness
+coverage, not the independent driver-leak reproducer or every earlier leak-hunt
+conclusion. No running compositor has been replaced or signalled by this work;
+production data and historical artifacts are untouched. New normal, injected-fault
+and assisted hardware desktop results remain required.
+
+### Earlier measurements
+
 **2026-08-11 (fault round, md5 `e54aa008`): PASS — the capture failure paths are
 now covered, and the workspace-capture panic fix `1148a2c7` is verified by
 execution rather than by inspection.**

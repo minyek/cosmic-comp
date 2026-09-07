@@ -1,5 +1,16 @@
 # VRAM regression test process
 
+## Current procedure
+
+Use [the retest guide](vram-tools/RETEST.md) and
+[build instructions](vram-tools/BUILDING.md). They replace the command-file
+transport, optional binary identity check, persistent capture faults and single
+combined verdict described below. Each normal, fault and assisted hardware round
+now requires a fresh directory and complete manifest. Do not run the legacy
+commands below against the updated scripts.
+
+## Historical procedure
+
 How to re-run the full desktop regression pass against an installed build and get
 a machine-checked verdict. This is the *repeatable* companion to
 [`vram-leak-runbook.md`](./vram-leak-runbook.md), which covers exploratory leak
