@@ -3,6 +3,7 @@ use cosmic_protocols::{
     toplevel_management::v1::client::zcosmic_toplevel_manager_v1,
 };
 use serde_json::{Value, json};
+mod x11;
 use std::{
     io::{self, BufRead, Write},
     os::fd::{AsFd, AsRawFd},
@@ -11,11 +12,11 @@ use std::{
 };
 use vram_retest_client::Evidence;
 use wayland_client::{
-    Connection, Dispatch, QueueHandle, delegate_noop,
+    Connection, Dispatch, Proxy, QueueHandle, delegate_noop,
     globals::{GlobalListContents, registry_queue_init},
     protocol::{
-        wl_buffer, wl_callback, wl_compositor, wl_pointer, wl_registry, wl_seat, wl_shm,
-        wl_shm_pool, wl_surface,
+        wl_buffer, wl_callback, wl_compositor, wl_keyboard, wl_output, wl_pointer, wl_registry,
+        wl_seat, wl_shm, wl_shm_pool, wl_surface,
     },
 };
 use wayland_protocols::ext::foreign_toplevel_list::v1::client::{
@@ -64,10 +65,23 @@ struct State {
     management: Option<zcosmic_toplevel_manager_v1::ZcosmicToplevelManagerV1>,
     managed: Option<zcosmic_toplevel_handle_v1::ZcosmicToplevelHandleV1>,
     capabilities: Vec<u32>,
+    compositor: wl_compositor::WlCompositor,
+    pending_surface: Option<wl_surface::WlSurface>,
+    pending_token: bool,
+    x11_token: bool,
+    x11_window: Option<x11::StartupWindow>,
+    keyboard_serial: Option<u32>,
+    outputs: Vec<(wl_output::WlOutput, String)>,
+    removed_outputs: Vec<u32>,
 }
 
 impl State {
-    fn command(&mut self, command: &str, qh: &QueueHandle<Self>) -> Result<(), String> {
+    fn command(
+        &mut self,
+        command: &str,
+        request: &Value,
+        qh: &QueueHandle<Self>,
+    ) -> Result<(), String> {
         self.evidence.validate(command)?;
         match command {
             "lock" => {
@@ -140,10 +154,51 @@ impl State {
                 }
             }
             "fullscreen" => self.toplevel.set_fullscreen(None),
+            "fullscreen-target" => {
+                let name = request
+                    .get("output")
+                    .and_then(Value::as_str)
+                    .ok_or("fullscreen-target requires output name")?;
+                let output = self
+                    .outputs
+                    .iter()
+                    .find(|(p, n)| {
+                        n == name && !self.removed_outputs.contains(p.data::<u32>().unwrap())
+                    })
+                    .ok_or("target output unavailable or unnamed")?;
+                self.toplevel.set_fullscreen(Some(&output.0));
+            }
             "unfullscreen" => self.toplevel.unset_fullscreen(),
-            "activate-token" => {
+            "pending-destroy" => self
+                .pending_surface
+                .take()
+                .ok_or("no pending activation surface")?
+                .destroy(),
+            "x11-destroy" => self
+                .x11_window
+                .take()
+                .ok_or("no X11 startup window")?
+                .destroy()
+                .map_err(|e| e.to_string())?,
+            "activate-token" | "pending-activate" | "x11-activate" => {
                 if self.token.is_some() {
                     return Err("activation token already pending".into());
+                }
+                let serial = self
+                    .keyboard_serial
+                    .ok_or("activation requires keyboard focus enter event")?;
+                if command == "x11-activate" {
+                    if self.x11_window.is_some() {
+                        return Err("X11 startup window already exists".into());
+                    }
+                    self.x11_token = true;
+                }
+                if command == "pending-activate" {
+                    if self.pending_surface.is_some() {
+                        return Err("pending activation surface already exists".into());
+                    }
+                    self.pending_surface = Some(self.compositor.create_surface(qh, ()));
+                    self.pending_token = true;
                 }
                 let token = self
                     .activation
@@ -152,13 +207,17 @@ impl State {
                     .get_activation_token(qh, ());
                 token.set_app_id(self.app_id.clone());
                 token.set_surface(&self.surface);
-                if self.evidence.focused {
-                    token.set_serial(self.serial, &self.seat);
-                }
+                token.set_serial(serial, &self.seat);
                 token.commit();
                 self.token = Some(token);
             }
             "destroy" | "quit" => {
+                if let Some(window) = self.x11_window.take() {
+                    window.destroy().map_err(|e| e.to_string())?;
+                }
+                if let Some(surface) = self.pending_surface.take() {
+                    surface.destroy();
+                }
                 if let Some(constraint) = self.constraint.take() {
                     constraint.destroy();
                 }
@@ -228,6 +287,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let shell: xdg_wm_base::XdgWmBase = globals.bind(&qh, 1..=1, ())?;
     let seat: wl_seat::WlSeat = globals.bind(&qh, 1..=5, ())?;
     let pointer = seat.get_pointer(&qh, ());
+    let _keyboard = seat.get_keyboard(&qh, ());
+    conn.display().get_registry(&qh, ());
     let shape_manager: Option<wp_cursor_shape_manager_v1::WpCursorShapeManagerV1> =
         globals.bind(&qh, 1..=1, ()).ok();
     let surface = compositor.create_surface(&qh, ());
@@ -262,6 +323,14 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         management: globals.bind(&qh, 3..=4, ()).ok(),
         managed: None,
         capabilities: Vec::new(),
+        compositor,
+        pending_surface: None,
+        pending_token: false,
+        x11_token: false,
+        x11_window: None,
+        keyboard_serial: None,
+        outputs: Vec::new(),
+        removed_outputs: Vec::new(),
     };
     state.surface.commit();
     let (sender, receiver) = mpsc::channel();
@@ -290,7 +359,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                         .get("command")
                         .and_then(Value::as_str)
                         .ok_or("expected JSON command string")?;
-                    state.command(command, &qh)?;
+                    state.command(command, &request, &qh)?;
                     conn.display().sync(&qh, command.to_owned());
                     if state.quitting {
                         break;
@@ -495,19 +564,147 @@ impl Dispatch<xdg_activation_token_v1::XdgActivationTokenV1, ()> for State {
         _: &xdg_activation_token_v1::XdgActivationTokenV1,
         event: xdg_activation_token_v1::Event,
         _: &(),
-        _: &Connection,
-        _: &QueueHandle<Self>,
+        conn: &Connection,
+        qh: &QueueHandle<Self>,
     ) {
-        if let xdg_activation_token_v1::Event::Done { .. } = event {
+        if let xdg_activation_token_v1::Event::Done {
+            token: activation_token,
+        } = event
+        {
             emit("activation-token-done", json!({}));
+            if state.x11_token {
+                state.x11_token = false;
+                match x11::StartupWindow::map(&activation_token, &state.app_id) {
+                    Ok(window) => {
+                        state.x11_window = Some(window);
+                        emit("x11-map-submitted", json!({}));
+                        conn.display().sync(qh, "x11-activate-ready".to_owned());
+                    }
+                    Err(error) => {
+                        emit("error", json!({"message":error.to_string()}));
+                        std::process::exit(1);
+                    }
+                }
+            } else if state.pending_token {
+                state.pending_token = false;
+                if let Some(surface) = &state.pending_surface {
+                    state
+                        .activation
+                        .as_ref()
+                        .unwrap()
+                        .activate(activation_token, surface);
+                    emit("pending-activation-submitted", json!({}));
+                    conn.display().sync(qh, "pending-activate-ready".to_owned());
+                }
+            }
             if let Some(token) = state.token.take() {
                 token.destroy();
             }
         }
     }
 }
+impl Dispatch<wl_registry::WlRegistry, ()> for State {
+    fn event(
+        state: &mut Self,
+        registry: &wl_registry::WlRegistry,
+        event: wl_registry::Event,
+        _: &(),
+        _: &Connection,
+        qh: &QueueHandle<Self>,
+    ) {
+        match event {
+            wl_registry::Event::Global {
+                name,
+                interface,
+                version,
+            } if interface == "wl_output" && version >= 4 => {
+                state
+                    .outputs
+                    .push((registry.bind(name, 4, qh, name), String::new()));
+            }
+            wl_registry::Event::GlobalRemove { name } => {
+                state.removed_outputs.push(name);
+                if let Some((_, output_name)) = state
+                    .outputs
+                    .iter()
+                    .find(|(p, _)| p.data::<u32>() == Some(&name))
+                {
+                    emit("output-removed", json!({"name":output_name}));
+                }
+            }
+            _ => {}
+        }
+    }
+}
+impl Dispatch<wl_keyboard::WlKeyboard, ()> for State {
+    fn event(
+        state: &mut Self,
+        _: &wl_keyboard::WlKeyboard,
+        event: wl_keyboard::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        match event {
+            wl_keyboard::Event::Enter { serial, .. } => {
+                state.evidence.keyboard_focused = true;
+                state.keyboard_serial = Some(serial);
+                emit("keyboard-enter", json!({"serial":serial}));
+            }
+            wl_keyboard::Event::Leave { .. } => {
+                state.evidence.keyboard_focused = false;
+                state.keyboard_serial = None;
+                emit("keyboard-leave", json!({}));
+            }
+            wl_keyboard::Event::Key { serial, .. } => state.keyboard_serial = Some(serial),
+            _ => {}
+        }
+    }
+}
+impl Dispatch<wl_output::WlOutput, u32> for State {
+    fn event(
+        state: &mut Self,
+        proxy: &wl_output::WlOutput,
+        event: wl_output::Event,
+        _: &u32,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        if let wl_output::Event::Name { name } = event {
+            if let Some((_, stored)) = state.outputs.iter_mut().find(|(p, _)| p == proxy) {
+                *stored = name.clone();
+            }
+            emit("output", json!({"name":name}));
+        }
+    }
+}
+impl Dispatch<wl_surface::WlSurface, ()> for State {
+    fn event(
+        state: &mut Self,
+        proxy: &wl_surface::WlSurface,
+        event: wl_surface::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        if proxy != &state.surface {
+            return;
+        }
+        let (event_name, output) = match event {
+            wl_surface::Event::Enter { output } => ("output-enter", output),
+            wl_surface::Event::Leave { output } => ("output-leave", output),
+            _ => return,
+        };
+        let name = state
+            .outputs
+            .iter()
+            .find(|(p, _)| p == &output)
+            .map(|(_, n)| n.as_str())
+            .unwrap_or("");
+        emit(event_name, json!({"name":name}));
+    }
+}
 delegate_noop!(State: ignore wl_compositor::WlCompositor);
-delegate_noop!(State: ignore wl_surface::WlSurface);
 delegate_noop!(State: ignore wl_shm::WlShm);
 delegate_noop!(State: ignore wl_shm_pool::WlShmPool);
 delegate_noop!(State: ignore wl_buffer::WlBuffer);

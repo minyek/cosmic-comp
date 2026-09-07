@@ -29,11 +29,16 @@ Exit zero alone proves no coverage.
 | `unlock` | Destroy existing constraint, including after pointer focus leaves | `acknowledged`, then compositor hint/position census |
 | `shape-default`, `shape-pointer` | Set named shape using current pointer-enter serial | `acknowledged`, then compositor cursor counters |
 | `fullscreen`, `unfullscreen` | Change xdg toplevel fullscreen state | `toplevel-state` or `managed-state` |
+| `fullscreen-target` | JSON includes `"output":"DP-1"`; named live wl_output v4 required | `output-enter` naming the target plus fullscreen state |
 | `minimize` | Request xdg toplevel minimization | `managed-state` containing `1` |
 | `unminimize` | COSMIC management capability `4` | `managed-state` without `1` |
 | `sticky`, `unsticky` | COSMIC management capability `7` | `managed-state` with / without `4` |
 | `focus` | COSMIC management capability `2`; own discovered toplevel only | `managed-state` containing `2`; pointer focus still needs input |
 | `activate-token` | Commit xdg activation token referencing own surface | `activation-token-done`; census must prove server token acceptance and teardown |
+| `pending-activate` | Keyboard-focused requester; create unmapped target surface and activate it with returned token | `pending-activation-submitted`, then `acknowledged` for `pending-activate-ready`, then positive pending Wayland census delta |
+| `pending-destroy` | Destroy that unmapped target | `acknowledged`, then pending Wayland census returns to baseline |
+| `x11-activate` | Keyboard-focused requester; obtain token, set owned X11 window `_NET_STARTUP_ID`, map it | `x11-map-submitted`, then `acknowledged` for `x11-activate-ready`; compositor insertion counter required |
+| `x11-destroy` | Destroy the owned startup X11 window | `acknowledged`, compositor X11 pending-prune counter required |
 | `destroy`, `quit` | Destroy lock, pending token, xdg toplevel and surface | `acknowledged`, `complete`; subsequent census must prove cleanup |
 
 `submitted` means the request was issued. `acknowledged` follows a
@@ -41,6 +46,17 @@ Exit zero alone proves no coverage.
 not that the compositor honored an optional request or ran an idle callback.
 `complete.detail.coverage_verdict` explicitly requires compositor/harness evidence.
 Send one command and await its evidence before sending the next.
+
+Activation requests require an observed `keyboard-enter` event, which supplies
+the keyboard serial and seat used to validate the token. Pointer focus is not
+the activation serial source. `keyboard-leave` invalidates this precondition.
+Tokens remain inside the client and are not written to its JSON output.
+
+`output` reports each bound output's name; `output-enter`/`output-leave` report
+actual wl_surface membership for the main mapped helper surface. Hotplugged
+outputs are bound as they appear. `output-removed` reports registry removal;
+removed outputs cannot be fullscreen targets. Unnamed outputs or protocols below
+wl_output version 4 cannot satisfy named-output evidence.
 
 `ready` follows initial xdg configure acknowledgement and buffer attachment. It
 reports `app_id`, dimensions and availability of constraints, cursor-shape and
@@ -77,9 +93,22 @@ The harness supplies bounded input and compares phase-local census samples.
 5. Minimized lifecycle: run separate normal, confirmed fullscreen, and confirmed
    sticky cases. Minimize, prove COSMIC minimized state, destroy, and verify
    resource census returns to baseline. Requests without state confirmation fail.
-6. Activation: obtain token completion, destroy the client surface, and verify
-   server activation-resource counters return to baseline. A returned token alone
-   is not evidence that the compositor accepted it.
+6. Pending Wayland activation: focus the requester, wait for keyboard enter,
+   `pending-activate`, and wait for the post-activation sync. Require the pending
+   Wayland census to rise before `pending-destroy`, then return to baseline.
+   This uses the compositor's Focus activation policy path; other policies may
+   decline activation of unmapped surfaces and must produce an incomplete phase.
+7. Pending X11 activation: repeat `x11-activate`/`x11-destroy` with fresh focus
+   and token validation each time. Require positive compositor insertion AND
+   pruning counters. Normal mapping may consume the pending activation before
+   destruction; that does not exercise dead-window pruning. If bursts cannot
+   reach pruning, this phase remains incomplete and needs a controlled Xwayland
+   map/association fixture. Display-sync acknowledgements do not synchronize
+   XWM handling across the X11 and Wayland connections.
+
+Token issuance alone does not exercise the pending-activation cleanup path.
+The `activate-token` command is a token lifecycle probe, never a substitute for
+either pending-activation scenario.
 
 The client does not implement image-copy capture. Persistent recording must be
 supplied by a separately tracked recorder, with frame progress and session-census

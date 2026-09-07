@@ -12,4 +12,5 @@ wayland-protocols = { version = "=0.32.13", features = ["client", "staging", "un
 serde_json = "1"
 tempfile = "3"
 libc = "0.2"
+x11rb = "=0.13.2"
 cosmic-protocols = { git = "https://github.com/pop-os/cosmic-protocols", rev = "32283d7", default-features = false, features = ["client"] }

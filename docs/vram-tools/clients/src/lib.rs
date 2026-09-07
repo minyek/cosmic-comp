@@ -4,6 +4,7 @@ pub struct Evidence {
     pub locked: bool,
     pub constraint: bool,
     pub configured: bool,
+    pub keyboard_focused: bool,
 }
 
 impl Evidence {
@@ -12,6 +13,9 @@ impl Evidence {
             return Err("surface is not configured");
         }
         match command {
+            "activate-token" | "pending-activate" | "x11-activate" if !self.keyboard_focused => {
+                Err("activation requires keyboard focus")
+            }
             "lock" if !self.focused || self.constraint => {
                 Err("lock requires focus and no existing constraint")
             }
@@ -61,6 +65,7 @@ mod tests {
             focused: true,
             constraint: true,
             locked: true,
+            keyboard_focused: false,
         };
         assert!(evidence.validate("lock").is_err());
     }
@@ -73,5 +78,24 @@ mod tests {
             ..Evidence::default()
         };
         assert!(evidence.validate("unlock").is_ok());
+    }
+
+    #[test]
+    fn pending_activation_requires_keyboard_focus() {
+        let evidence = Evidence {
+            configured: true,
+            focused: true,
+            ..Evidence::default()
+        };
+        assert!(evidence.validate("pending-activate").is_err());
+    }
+
+    #[test]
+    fn x11_activation_requires_keyboard_focus() {
+        let evidence = Evidence {
+            configured: true,
+            ..Evidence::default()
+        };
+        assert!(evidence.validate("x11-activate").is_err());
     }
 }
