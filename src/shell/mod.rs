@@ -4589,6 +4589,7 @@ impl Shell {
         }) {
             let to = minimize_rectangle(&set.output, &mapped.active_window());
             let geo = set.sticky_layer.unmap(&mapped, Some(to)).unwrap();
+            mapped.set_minimized(true);
             set.minimized_windows.push(MinimizedWindow::Floating {
                 window: mapped.clone(),
                 previous: FloatingRestoreData {
@@ -4642,6 +4643,7 @@ impl Shell {
             if window.is_stack() {
                 window.set_active(surface);
             }
+            window.set_minimized(false);
             set.sticky_layer
                 .remap_minimized(window, from, previous_position);
         } else {
