@@ -3271,12 +3271,34 @@ impl TilingLayout {
                 }
             }
 
+            let (_, inner) = self.gaps();
             let mut result = None;
+            let mut fork = None;
             let mut lookup = Some(root.clone());
             while let Some(node) = lookup {
                 let data = tree.get(&node).unwrap().data();
                 if data.geometry().contains(location) {
                     result = Some(node.clone());
+                    if let Data::Group {
+                        orientation,
+                        sizes,
+                        last_geometry,
+                        ..
+                    } = data
+                    {
+                        let (pos, mut split) = match orientation {
+                            Orientation::Vertical => (location.x, last_geometry.loc.x),
+                            Orientation::Horizontal => (location.y, last_geometry.loc.y),
+                        };
+                        for (idx, size) in
+                            sizes.iter().take(sizes.len().saturating_sub(1)).enumerate()
+                        {
+                            split += size;
+                            if (pos - split).abs() <= inner / 2 {
+                                fork = Some((node.clone(), idx));
+                            }
+                        }
+                    }
                 }
 
                 lookup = None;
@@ -3323,25 +3345,16 @@ impl TilingLayout {
                             )
                         })
                 }
-                Some((
-                    id,
-                    Data::Group {
+                Some((_, Data::Group { .. })) => {
+                    let (id, idx) = fork?;
+                    let Data::Group {
                         orientation,
                         last_geometry,
                         ..
-                    },
-                )) => {
-                    let idx = tree
-                        .children(&id)
-                        .unwrap()
-                        .position(|node| {
-                            let data = node.data();
-                            match orientation {
-                                Orientation::Vertical => location.x < data.geometry().loc.x,
-                                Orientation::Horizontal => location.y < data.geometry().loc.y,
-                            }
-                        })
-                        .and_then(|x| x.checked_sub(1))?;
+                    } = tree.get(&id).unwrap().data().clone()
+                    else {
+                        unreachable!()
+                    };
                     Some((
                         ResizeForkTarget {
                             node: id.clone(),
@@ -3381,7 +3394,7 @@ impl TilingLayout {
         let Some(root) = tree.root_node_id() else {
             if matches!(
                 overview.active_trigger(),
-                Some(Trigger::Pointer(_) | Trigger::Touch(_))
+                Some(Trigger::Pointer(_) | Trigger::Touch(_) | Trigger::Tool(_, _))
             ) && location_f64.is_some()
             {
                 let mut tree = tree.copy_clone();
@@ -3414,7 +3427,7 @@ impl TilingLayout {
 
         if matches!(
             overview.active_trigger(),
-            Some(Trigger::Pointer(_) | Trigger::Touch(_))
+            Some(Trigger::Pointer(_) | Trigger::Touch(_) | Trigger::Tool(_, _))
         ) {
             let non_exclusive_zone = layer_map_for_output(&self.output)
                 .non_exclusive_zone()
@@ -4062,8 +4075,11 @@ impl TilingLayout {
         let draw_groups = overview.0.alpha();
 
         let is_overview = !matches!(overview.0, OverviewMode::None);
-        let is_mouse_tiling = (matches!(overview.0.trigger(), Some(Trigger::Pointer(_))))
-            .then(|| self.last_overview_hover.as_ref().map(|(_, zone)| zone));
+        let is_mouse_tiling = (matches!(
+            overview.0.trigger(),
+            Some(Trigger::Pointer(_) | Trigger::Tool(_, _))
+        ))
+        .then(|| self.last_overview_hover.as_ref().map(|(_, zone)| zone));
         let swap_desc = if let Some(Trigger::KeyboardSwap(_, desc)) = overview.0.trigger() {
             Some(desc.clone())
         } else {
@@ -4216,8 +4232,11 @@ impl TilingLayout {
         };
         let draw_groups = overview.0.alpha();
 
-        let is_mouse_tiling = (matches!(overview.0.trigger(), Some(Trigger::Pointer(_))))
-            .then(|| self.last_overview_hover.as_ref().map(|(_, zone)| zone));
+        let is_mouse_tiling = (matches!(
+            overview.0.trigger(),
+            Some(Trigger::Pointer(_) | Trigger::Tool(_, _))
+        ))
+        .then(|| self.last_overview_hover.as_ref().map(|(_, zone)| zone));
         let swap_desc = if let Some(Trigger::KeyboardSwap(_, desc)) = overview.0.trigger() {
             Some(desc.clone())
         } else {

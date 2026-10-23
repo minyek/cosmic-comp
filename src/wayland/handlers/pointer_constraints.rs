@@ -98,33 +98,45 @@ impl PointerConstraintsHandler for State {
         constraint_remove: ConstraintRemove,
     ) {
         match constraint_remove {
-            ConstraintRemove::PointerLeave(_) => {}
+            ConstraintRemove::PointerLeave(_) => {
+                // If the constraint was broken by the pointer forcibly leaving the surface, then it doesn't
+                // make much sense to warp it.
+            }
             ConstraintRemove::Destroyed(constraint) => {
-                let Some(seat) = self
-                    .common
-                    .shell
-                    .read()
-                    .seats
-                    .iter()
-                    .find(|s| s.get_pointer().as_ref() == Some(pointer))
-                    .cloned()
-                else {
-                    return;
-                };
-                let focused_surface = pointer
-                    .last_enter()
-                    .and_then(|_| pointer.current_focus())
-                    .and_then(|focus| focus.wl_surface().map(|surface| surface.into_owned()));
-                let Some(hint_location) = cursor_hint_for_constraint_removal(
-                    focused_surface.as_ref(),
-                    surface,
-                    seat.pointer_constraint_hint(),
-                ) else {
-                    return;
-                };
+                let surface = surface.clone();
+                let pointer = pointer.clone();
+                self.common.event_loop_handle.insert_idle(move |state| {
+                    let seat = state
+                        .common
+                        .shell
+                        .read()
+                        .seats
+                        .iter()
+                        .find(|s| s.get_pointer().as_ref() == Some(&pointer))
+                        .cloned();
+                    let Some(seat) = seat else {
+                        return;
+                    };
+                    let focused_surface = pointer
+                        .last_enter()
+                        .and_then(|_| pointer.current_focus())
+                        .and_then(|focus| focus.wl_surface().map(|surface| surface.into_owned()));
+                    let Some(hint_location) = cursor_hint_for_constraint_removal(
+                        focused_surface.as_ref(),
+                        &surface,
+                        seat.pointer_constraint_hint(),
+                    ) else {
+                        return;
+                    };
 
-                self.apply_cursor_hint(surface, pointer, hint_location, Some(&constraint));
-                seat.set_pointer_constraint_hint(None);
+                    state.apply_cursor_hint(
+                        &surface,
+                        &pointer,
+                        hint_location,
+                        Some(&constraint),
+                    );
+                    seat.set_pointer_constraint_hint(None);
+                });
             }
         }
     }
