@@ -29,3 +29,8 @@ This project uses [just](https://github.com/casey/just) as a command runner.
 #### Vendoring
 - `just vendor` - Vendor dependencies locally and create vendor.tar
 - `just vendor-extract` - Extract vendored dependencies from vendor.tar
+
+## Fedora RPM
+
+See [the Fedora 45 local RPM instructions](packaging/rpm/README.md) to build
+and install a package from the committed checkout.
