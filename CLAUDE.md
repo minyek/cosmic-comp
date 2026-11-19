@@ -29,9 +29,11 @@ This fork (`minyek/cosmic-comp`) follows the `fork-upstream-pr-workflow` skill.
 ## Syncing from upstream
 
 `/sync-upstream` rebases `master` onto `upstream/master`; there is no merge commit from upstream.
-Resolve a conflict in the fork commit it belongs to. An adaptation the gate needs is a `fixup!` commit
-folded in the sync worktree before the push (`git rebase --autosquash upstream/master`), so the gated
-tree is the one pushed. A landing after a sync restacks its worktree branch onto the new `master`.
+Resolve a conflict in the fork commit it belongs to. An adaptation the gate needs that belongs to one
+commit is a `fixup!` commit folded in the sync worktree before the push
+(`git rebase --autosquash upstream/master`; `git diff <tip before the fold> HEAD` must print nothing), so
+the gated tree is the one pushed; one that spans several commits goes on top as its own commit. A
+landing after a sync restacks its worktree branch onto the new `master`.
 
 ## VRAM leak work: hunt resolved, upstreaming in progress
 
