@@ -20,7 +20,10 @@ This fork (`minyek/cosmic-comp`) follows the `fork-upstream-pr-workflow` skill.
   and the fork's `README.md` and `build.rs` edits for the RPM build (`Add Fedora 45 RPM packaging`).
 - **Gate.** Upstream's CI (`.github/workflows/ci.yml`), run detached through `arm-run` from the
   worktree: `cargo fmt --all -- --check`, `cargo clippy --all-features -- -D warnings`,
-  `cargo check --no-default-features`, `cargo check --features debug`, `cargo test`.
+  `cargo check --no-default-features`, `cargo check --features debug`,
+  `cargo check --features profile-with-tracy`, `cargo check --features profile-with-tracy-gpu` and
+  `cargo test --all-features`. Run with `CARGO_TARGET_DIR` set to the main checkout's `target`, so the
+  build cache is shared.
 - **Install after a change lands on `master`.** Build the RPM with `packaging/rpm/build-rpm.sh` (detached,
   from the main checkout; it builds committed `HEAD`), then the user installs it:
   `sudo dnf5 install ./target/rpm-build/cosmic-comp.rpm`. The agent cannot restart the compositor, so a
@@ -52,10 +55,10 @@ validating the fixed builds and getting the fixes merged upstream.
 
 ### Upstream status
 
-- Both smithay PRs are **merged**. `Renderer::invalidate_caches` and the
-  `GpuManager` cache methods are in Smithay master at `347b2b3`, which every
-  local branch now pins (`[patch.crates-io] smithay = { git = ".../smithay.git",
-  rev = "347b2b3" }`) — no more `path = "../smithay"`.
+- Both smithay PRs are **merged**: `Renderer::invalidate_caches` and the
+  `GpuManager` cache methods are in Smithay master. `master` pins the same smithay as
+  upstream (`[patch.crates-io] smithay`, `rev = "8a27023"`, in `Cargo.toml`), with no
+  `path = "../smithay"`; only the instrumented branch keeps that path, for its instrumented smithay.
 - cosmic-comp PR #2500 (leak fixes): rebased on `314fc670`, now also carrying
   the surface-thread join fix (its standalone branch/worktree are retired), and
   **ready to force-push**; the draft update comment is
