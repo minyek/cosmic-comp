@@ -9,7 +9,8 @@ This fork (`minyek/cosmic-comp`) follows the `fork-upstream-pr-workflow` skill.
   commit from upstream. `/sync-upstream` rebases it. It replaced the old local-only `all-fixes` branch,
   whose last state is the tag `backup/all-fixes-20261119T212530Z`. GitHub's "Sync fork" button and the
   scheduled `merge-upstream` workflow merge into `master`, so the workflow
-  (`.github/workflows/sync-upstream.yml`) is disabled and removed; sync only with `/sync-upstream`.
+  (`.github/workflows/sync-upstream.yml`) is disabled and removed; sync only with `/sync-upstream`,
+  never `gh repo sync --force`, which resets `master` to upstream.
 - **Pull requests.** Upstream accepts them (PR #2500 is open). A fix is a `fix/<slug>` branch cut from
   `upstream/master`, one issue each, stable once posted. PR descriptions and update comments live in
   `/mnt/work/projects/cosmic-de/pr-descriptions/` (`cosmic-comp-*.md`); the draft for the open PR also
